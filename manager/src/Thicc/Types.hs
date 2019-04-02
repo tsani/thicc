@@ -31,7 +31,7 @@ data ScaleConfig = ScaleConfig
   deriving (Eq, Ord, Show)
 
 data Service = Service
-  { serviceProxyIP :: Word32
+  { serviceProxyIP :: IPAddress
     -- ^ The IP address of the load balancer for this service.
   , serviceWorkers :: [Worker]
   }

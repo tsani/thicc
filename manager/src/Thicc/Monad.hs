@@ -5,7 +5,7 @@
 module Thicc.Monad where
 
 import Thicc.Types
-import qualified Thicc.WAL as WAL
+import Thicc.WAL as WAL
 
 import Control.Monad ( when )
 import Control.Monad.Except
@@ -16,6 +16,7 @@ import qualified Data.ByteString.Lazy as LBS
 import Data.Coerce
 import qualified Data.Map as M
 import Data.Maybe ( isJust )
+import Data.Monoid ( (<>) )
 import Docker.Client
 import GHC.Generics
 import qualified Network.EtcdV3 as Etcd
@@ -51,6 +52,7 @@ newtype Thicc a = Thicc
     , MonadError ThiccError
     , MonadState ThiccState
     , MonadReader ThiccEnv
+    , MonadIO
     )
 
 -- | The environment used to run the 'Thicc' monad.
@@ -61,10 +63,24 @@ data ThiccEnv = ThiccEnv
   , envGrpcClient :: GrpcClient
   }
 
+handleDockerError :: IO (Either DockerError a) -> Thicc a
+handleDockerError ioInput = do
+  output <- liftIO ioInput
+  case output of
+    Left e -> throwError $ DockerError e
+    Right x -> return x
+
+runDockerThicc :: DockerT IO (Either DockerError a) -> Thicc a
+runDockerThicc m = do
+  h <- asks envHttpHandler
+  clientOpts <- asks envClientOpts
+  handleDockerError $ runDockerT (clientOpts, h) m
+
 data ThiccError
   = UnknownError String
   | ServiceAlreadyExists ServiceId
   | NoSuchService ServiceId
+  | DockerError DockerError
 
 -- | The persistent state of the manager.
 data ThiccState = ThiccState
@@ -90,7 +106,48 @@ save = do
   _ -- write bs to etcd
 
 processLogEntry :: WAL.LogEntry -> ServiceMap -> Thicc ServiceMap
-processLogEntry entry map = _
+processLogEntry entry map = case entry of
+  CreateService serviceConfig -> do
+    --create container for proxy
+    container <- runDockerThicc $ do
+        createContainer
+    -- image of proxy                NEED TO CHANGE THIS TO THE RIGHT PROXY IMAGE!!!!!!!!!!!!!!!!!!!!!
+          (defaultCreateOpts "e5bb0b621a8b") { hostConfig = defaultHostConfig { networkMode = NetworkNamed "thicc-net" }}
+          (Just $ "proxy-" <> serviceConfigName serviceConfig)
+          
+
+    startOpts <- asks envStartOpts
+    runDockerThicc $ startContainer startOpts container
+    details <- runDockerThicc (inspectContainer container)
+    let ip = networkSettingsIpAddress $ networkSettings details
+    return $ M.insert  (ServiceId $ serviceConfigName serviceConfig)  Service {serviceProxyIP = IPAddress ip, serviceWorkers = []} map
+  BootWorker serviceId workerId -> _
+    -- h <- defaultHttpHandler
+    -- e <- runDockerT (clientOpts, h) $ do
+    --   e <- createContainer
+    --     -- image of worker                NEED TO CHANGE THIS TO THE RIGHT worker IMAGE!!!!!!!!!!!!!!!!!!!!!
+    --     (defaultCreateOpts "e5bb0b621a8b") { hostConfig = defaultHostConfig { networkMode = NetworkNamed "thicc-net" }}
+    --     CreateOpts
+    --       { containerConfig = defaultContainerConfig
+    --       , hostConfig = defaultHostConfig
+    --       , networkingConfig = _
+    --       }
+    --     (Just $ "worker-" <> serviceConfigName serviceConfig)
+    --     case e of
+    --       Left e -> pure $ Left e
+    --       Right id -> do
+    --         startContainer startOpts id
+    --  case e of
+    --    Left e -> print e
+    --    Right x -> print x
+
+  KillWorker serviceId workerId ->  _
+  ProxyRefresh serviceId x -> case x of
+    Just [workerId] -> _
+    Nothing          -> _
+  DeleteService serviceId -> _
+ -- pattern entry type
+ -- deal with each of the patterns
 
 processLog :: Thicc ()
 processLog = _
