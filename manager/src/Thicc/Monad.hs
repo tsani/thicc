@@ -15,13 +15,17 @@ import Control.Monad.State
 import Data.Aeson
 import qualified Data.ByteString.Lazy as LBS
 import Data.Coerce
+import qualified Data.IntMap as I
 import qualified Data.Map as M
-import qualified Data.Text as T
-import Data.Maybe ( isJust )
+import Data.Maybe ( isJust, listToMaybe )
 import Data.Monoid ( (<>) )
+import qualified Data.Set as S
 import qualified Data.Text as T
+import Data.Traversable ( for )
 import Docker.Client
 import GHC.Generics
+import Lens.Family2 ( (^.) )
+import Proto.Etcd.Etcdserver.Etcdserverpb.Rpc_Fields ( kvs, value )
 import qualified Network.EtcdV3 as Etcd
 import Network.GRPC.Client.Helpers ( GrpcClient, setupGrpcClient )
 
@@ -31,7 +35,7 @@ class MonadThicc m where
   -- Initially, the service has no workers associated with it.
   createService
     :: ServiceConfig -- ^ The name of the service.
-    -> m Service
+    -> m (ServiceId, Service)
 
   -- | Launches or removes workers in a service to meet the specified
   -- number of replicas. Returns the IP addresses of all workers in the service.
@@ -73,6 +77,8 @@ data ThiccError
     -- ^ A service already exists by that name
   | NoSuchService ServiceId
     -- ^ The requested service does not exist
+  | NoSuchContainer T.Text
+    -- ^ The requested container does not exist (by name)
   | DockerError DockerError
     -- ^ An internal docker command failed
   | SaveFailed
@@ -109,12 +115,14 @@ runDockerThicc m = do
         Left e -> throwError $ DockerError e
         Right x -> return x
 
+thiccStateKey = "thicc-state"
+
 -- | Persists the Thicc state to etcd.
 save :: Thicc ()
 save = do
   bs <- encode <$> get
   client <- asks envGrpcClient
-  m <- liftIO $ Etcd.put client "thicc-state" (LBS.toStrict bs) Nothing
+  m <- liftIO $ Etcd.put client thiccStateKey (LBS.toStrict bs) Nothing
   case m of
     Nothing -> throwError SaveFailed
     Just x -> pure ()
@@ -124,50 +132,83 @@ save = do
 proxyName :: ServiceId -> T.Text
 proxyName (ServiceId name) = "proxy-" <> name
 
-processLogEntry :: WAL.LogEntry -> ServiceMap -> Thicc ServiceMap
-processLogEntry entry map = case entry of
+-- | Computes the name of the container that hosts a worker.
+workerName :: ServiceId -> WorkerId -> T.Text
+workerName (ServiceId s) (WorkerId n) = s <> "-worker-" <> T.pack (show n)
+
+-- | Starts the given container (which must have already been created)
+-- and inspects it.
+startContainer' :: ContainerID -> Thicc ContainerDetails
+startContainer' cId = do
+  startOpts <- asks envStartOpts
+  runDockerThicc $ startContainer startOpts cId
+  runDockerThicc (inspectContainer cId)
+
+processLogEntry :: WAL.LogEntry -> Thicc ()
+processLogEntry entry = case entry of
   CreateService serviceConfig -> do
     --create container for proxy
-    container <- runDockerThicc $ do
-        createContainer
-    -- image of proxy                NEED TO CHANGE THIS TO THE RIGHT PROXY IMAGE!!!!!!!!!!!!!!!!!!!!!
-          (defaultCreateOpts "e5bb0b621a8b") { hostConfig = defaultHostConfig { networkMode = NetworkNamed "thicc-net" }}
-          (Just $ proxyName $ ServiceId $ serviceConfigName serviceConfig)
+    let sId = ServiceId $ serviceConfigName serviceConfig
+    cId <- runDockerThicc $ do
+     -- image of proxy: NEED TO CHANGE THIS TO THE RIGHT PROXY IMAGE!
+      let hostConfig = defaultHostConfig { networkMode = NetworkNamed "thicc-net" }
+      createContainer
+        (defaultCreateOpts "e5bb0b621a8b") { hostConfig = hostConfig }
+        (Just $ proxyName sId)
 
-    startOpts <- asks envStartOpts
-    runDockerThicc $ startContainer startOpts container
-    details <- runDockerThicc (inspectContainer container)
+    details <- startContainer' cId
     let ip = networkSettingsIpAddress $ networkSettings details
-    return $ M.insert  (ServiceId $ serviceConfigName serviceConfig)  Service {serviceProxyIP = IPAddress ip, serviceWorkers = []} map
+    let service = Service { serviceProxyIP = IPAddress ip, serviceWorkers = I.empty }
+
+    modify $ \s ->
+      s { thiccServiceMap = M.insert sId service $ thiccServiceMap s }
+
   BootWorker serviceId workerId -> do
-    container <- runDockerThicc $ do
+    service <- getService' serviceId
+
+    cId <- runDockerThicc $ do
+      let containerName = workerName serviceId workerId
+      let hostConfig = defaultHostConfig { networkMode = NetworkNamed "thicc-net" }
       createContainer
         -- need to get the worker image!!!
-        (defaultCreateOpts "e5bb0b621a8b") { hostConfig = defaultHostConfig { networkMode = NetworkNamed "thicc-net" }}
-        (Just $ unServiceId serviceId <> "-worker-" <> T.pack (show (unWorkerId workerId)))
+        (defaultCreateOpts "e5bb0b621a8b") { hostConfig = hostConfig }
+        (Just containerName)
 
-    startOpts <- asks envStartOpts
-    runDockerThicc $ startContainer startOpts container
-    details <- runDockerThicc (inspectContainer container)
+    details <- startContainer' cId
     let ip = networkSettingsIpAddress $ networkSettings details
-    let newWorker = Worker workerId $ IPAddress ip
-    return $ M.update (\a -> Just $ a { serviceWorkers = newWorker : serviceWorkers a}) serviceId map
+    let newWorker = Worker { workerIP = IPAddress ip }
+
+    putService serviceId
+      service { serviceWorkers = insertWorker workerId newWorker (serviceWorkers service) }
 
   KillWorker serviceId wId -> do
+    service <- getService' serviceId
+
+    let containerName =
+          unServiceId serviceId <> "-worker-" <> T.pack (show(unWorkerId wId))
     --stop worker
-    container <- findContainer $ unServiceId serviceId <> "-worker-" <> T.pack (show(unWorkerId wId))
-    runDockerThicc $ stopContainer DefaultTimeout container
-    runDockerThicc $ waitContainer container
+    container <- do
+      maybeContainer <- findContainer containerName
+      case maybeContainer of
+        Nothing -> throwError (NoSuchContainer containerName)
+        Just x -> pure x
+
+    let cid = containerId container
+    runDockerThicc $ stopContainer DefaultTimeout cid
+    runDockerThicc $ waitContainer cid
     --delete container
-    runDockerThicc $ deleteContainer defaultContainerDeleteOpts container
+    runDockerThicc $ deleteContainer defaultContainerDeleteOpts cid
     --remove from serviceMap
-    return $ M.update(\a -> Just a {serviceWorkers = (filter (\x -> workerId x /=  wId) $ serviceWorkers a)}) serviceId map
-  ProxyRefresh serviceId x -> case x of
-    Just [workerId] -> _
-    Nothing          -> _
-  DeleteService serviceId -> _
- -- pattern entry type
- -- deal with each of the patterns
+
+    putService serviceId
+      service { serviceWorkers = deleteWorker wId (serviceWorkers service) }
+
+  -- TODO
+  -- ProxyRefresh serviceId x -> case x of
+  --   Just workerIds -> _
+  --   Nothing -> _
+
+  -- DeleteService serviceId -> _
 
 -- | Runs the given 'Thicc' computation, and catches docker errors
 -- that may be thrown in it.
@@ -200,18 +241,68 @@ logEntrySatisfied entry =
   case entry of
     CreateService conf -> do
       let id = ServiceId $ serviceConfigName conf
-      let proxy = proxyName id
-      c <- findContainer proxy
-      case c of
+      let containerName = proxyName id
+      m <- getIdIp containerName
+      case m of
         Nothing -> pure False
-        Just x -> do
-          details <- runDockerThicc $ inspectContainer (containerId x)
-          let ip = networkSettingsIpAddress $ networkSettings details
-          let service =
-                Service { serviceProxyIP = IPAddress ip, serviceWorkers = [] }
+        Just (_, ip) -> do
           modify $ \s ->
-            s { thiccServiceMap = M.insert id service $ thiccServiceMap s }
+            s { thiccServiceMap = M.insert id (emptyService ip) $ thiccServiceMap s }
           pure True
+
+    BootWorker sId wId -> do
+      service <- getService' sId
+      let containerName = workerName sId wId
+      m <- getIdIp containerName
+      case m of
+        Nothing -> pure False
+        Just (_, ip) -> do
+          let worker = Worker { workerIP = ip }
+          let workerMap = insertWorker wId worker (serviceWorkers service)
+          putService sId
+            service { serviceWorkers = workerMap }
+          pure True
+
+    KillWorker sId wId -> do
+      service <- getService' sId
+      let containerName = workerName sId wId
+      -- check if the container is alive
+      m <- getIdIp containerName
+      case m of
+        -- if not, then make sure it's not i nthe worker map for the service
+        Nothing -> do
+          putService sId
+           service { serviceWorkers = deleteWorker wId (serviceWorkers service) }
+          pure True
+        -- if so, then the postconditions are not satisfied
+        Just _ -> pure False
+
+    ProxyRefresh _ _ ->
+      -- Refresh is idempotent, so there's no harm.
+      -- Plus, detecting whether the proxy is running a specific
+      -- config file is nontrivial.
+      pure False
+
+    DeleteService sId -> do
+      m <- getIdIp (proxyName sId)
+      case m of
+        Nothing -> do
+          modify $ \s ->
+            s { thiccServiceMap = M.delete sId (thiccServiceMap s) }
+          pure True
+        Just _ -> pure False
+
+  where
+    -- get the IP address of the container with the given name
+    getIdIp name = do
+      c <- findContainer name
+      for c $ \x -> do
+        let cId = containerId x
+        details <- runDockerThicc $ inspectContainer cId
+        pure $
+          ( cId
+          , IPAddress $ networkSettingsIpAddress $ networkSettings details
+          )
 
 processLog :: Thicc ()
 processLog = gets thiccWAL >>= go where
@@ -219,10 +310,7 @@ processLog = gets thiccWAL >>= go where
   go (entry : entries) = do
     -- check if the entry's postconditions are already satisfied
     b <- logEntrySatisfied entry
-    when (not b) $ do
-      map <- gets thiccServiceMap
-      map' <- processLogEntry entry map
-      modify $ \s -> s { thiccServiceMap = map' }
+    when (not b) $ processLogEntry entry
     -- after executing the entry, shrink the list of entries to process
     modify $ \s -> s { thiccWAL = entries }
     -- and persist the state to fault-tolerant storage
@@ -233,6 +321,11 @@ addLogEntry :: WAL.LogEntry -> Thicc ()
 addLogEntry entry = do
   modify $ \s -> s { thiccWAL = entry : thiccWAL s }
   save
+
+putService :: ServiceId -> Service -> Thicc ()
+putService sId service =
+  modify $ \s ->
+  s { thiccServiceMap = M.insert sId service (thiccServiceMap s) }
 
 getService :: ServiceId -> Thicc (Maybe Service)
 getService id = M.lookup id <$> gets thiccServiceMap
@@ -254,8 +347,7 @@ instance MonadThicc Thicc where
     let id = ServiceId $ serviceConfigName config
     do
       b <- isServiceIdAvailable id
-      when (not b) $
-        throwError (ServiceAlreadyExists id)
+      when (not b) $ throwError (ServiceAlreadyExists id)
 
     addLogEntry (WAL.CreateService config)
     processLog
@@ -263,11 +355,12 @@ instance MonadThicc Thicc where
     -- this throws NoSuchService if the id can't be found and maybe we
     -- want a better error because this really shouldn't ever happen
     -- and is indicative of a deeper internal problem
-    getService' id
+    s <- getService' id
+    pure (id, s)
 
   scaleService config = do
     let serviceId = scaleConfigServiceId config
-    workerIds <- map (unWorkerId . workerId) . serviceWorkers <$> getService' serviceId
+    workerIds <- I.keys . serviceWorkers <$> getService' serviceId
     let workerCount = length workerIds
     let baseId =
           case workerIds of
@@ -291,18 +384,23 @@ instance MonadThicc Thicc where
 
     -- after the log has finished being processed, we can extract all
     -- the IP addresses from the service's live workers.
-    map workerIP . serviceWorkers <$> getService' serviceId
+    map workerIP . I.elems . serviceWorkers <$> getService' serviceId
 
   deleteService serviceId = do
     addLogEntry (WAL.DeleteService serviceId)
     processLog
 
+-- | Runs the given 'Thicc' computation.
+--
+-- Before the computation is run, any pending operations in the WAL
+-- are executed.
 runThicc :: ThiccEnv -> ThiccState -> Thicc a -> IO (Either ThiccError a, ThiccState)
-runThicc env initial (Thicc r) =
-  runReaderT (runStateT (runExceptT r) initial) env
+runThicc env initial m = runReaderT (runStateT (runExceptT r) initial) env where
+  Thicc r = processLog >> m
 
 -- | Constructs a default 'ThiccEnv'.
--- This requires IO in order to instantiate an HTTP handler.
+-- This requires IO in order to instantiate an HTTP handler and to
+-- setup the GRPC client.
 mkThiccEnv :: IO ThiccEnv
 mkThiccEnv = do
   grpcClient <- setupGrpcClient grpcClientConf
@@ -313,6 +411,16 @@ mkThiccEnv = do
     , envClientOpts = clientOpts
     , envGrpcClient = grpcClient
     }
+
+-- | Attempts to load the 'ThiccState' from etcd.
+loadState :: ThiccEnv -> IO (Maybe ThiccState)
+loadState env =
+  (decode . LBS.fromStrict . (^. value) =<<) . (listToMaybe . (^. kvs) =<<)
+  <$> Etcd.range (envGrpcClient env) (Etcd.SingleKey thiccStateKey)
+
+initialThiccState :: ThiccState
+initialThiccState =
+  ThiccState { thiccServiceMap = M.empty, thiccWAL = [] }
 
 startOpts = StartOpts { detachKeys = DefaultDetachKey }
 clientOpts = DockerClientOpts

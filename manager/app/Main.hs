@@ -6,18 +6,30 @@ module Main where
 import Thicc.Monad
 import Thicc.Types
 
+import Control.Applicative ( (<|>) )
 import Control.Monad
+import Data.Maybe ( fromMaybe )
 import Docker.Client
 
 main :: IO ()
 main = do
   env <- mkThiccEnv
-  (s, ws) <- runThicc env $ do
+  -- loads the last state from etcd or uses the empty one
+  -- if there is no saved state / if the saved state fails to parse
+  st <- fromMaybe initialThiccState <$> loadState env
+  (s, ips) <- runThicc env st $ do
     -- create service abc
-    s <- createService "abc"
+    (sId, s) <- createService ServiceConfig
+      { serviceConfigName = "abc"
+      , serviceCommand = "nc -lkp 80"
+      }
+
     -- boot three workers in the service
-    ws <- forM [1,2,3] $ \_ -> bootWorker (serviceId s)
-    pure (s, ws)
+    ips <- scaleService ScaleConfig
+      { scaleConfigServiceId = sId
+      , scaleConfigNumber = 3
+      }
+    pure (s, ips)
 
   pure ()
     

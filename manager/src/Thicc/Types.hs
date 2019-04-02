@@ -4,6 +4,8 @@
 module Thicc.Types where
 
 import Data.Aeson
+import Data.Coerce ( coerce )
+import qualified Data.IntMap as I
 import qualified Data.Scientific as Sci
 import qualified Data.Text as T
 import Data.Word
@@ -30,12 +32,23 @@ data ScaleConfig = ScaleConfig
   }
   deriving (Eq, Ord, Show)
 
+type WorkerMap = I.IntMap Worker
+
+insertWorker :: WorkerId -> Worker -> WorkerMap -> WorkerMap
+insertWorker wId = I.insert (coerce wId)
+
+deleteWorker :: WorkerId -> WorkerMap -> WorkerMap
+deleteWorker wId = I.delete (coerce wId)
+
 data Service = Service
   { serviceProxyIP :: IPAddress
     -- ^ The IP address of the load balancer for this service.
-  , serviceWorkers :: [Worker]
+  , serviceWorkers :: WorkerMap
   }
   deriving (Eq, Ord, Show, Generic)
+
+emptyService :: IPAddress -> Service
+emptyService ip = Service { serviceProxyIP = ip, serviceWorkers = I.empty }
 
 instance ToJSON Service
 instance FromJSON Service
@@ -45,8 +58,7 @@ newtype IPAddress =
   deriving (Eq, Ord, Show, ToJSON, FromJSON)
 
 data Worker = Worker
-  { workerId :: WorkerId
-  , workerIP :: IPAddress
+  { workerIP :: IPAddress
     -- ^ The IP address of the worker.
   }
   deriving (Eq, Ord, Show, Generic)
