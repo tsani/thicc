@@ -16,6 +16,7 @@ import Data.Aeson
 import qualified Data.ByteString.Lazy as LBS
 import Data.Coerce
 import qualified Data.Map as M
+import qualified Data.Text as T
 import Data.Maybe ( isJust )
 import Data.Monoid ( (<>) )
 import qualified Data.Text as T
@@ -132,34 +133,35 @@ processLogEntry entry map = case entry of
     -- image of proxy                NEED TO CHANGE THIS TO THE RIGHT PROXY IMAGE!!!!!!!!!!!!!!!!!!!!!
           (defaultCreateOpts "e5bb0b621a8b") { hostConfig = defaultHostConfig { networkMode = NetworkNamed "thicc-net" }}
           (Just $ proxyName $ ServiceId $ serviceConfigName serviceConfig)
-          
 
     startOpts <- asks envStartOpts
     runDockerThicc $ startContainer startOpts container
     details <- runDockerThicc (inspectContainer container)
     let ip = networkSettingsIpAddress $ networkSettings details
     return $ M.insert  (ServiceId $ serviceConfigName serviceConfig)  Service {serviceProxyIP = IPAddress ip, serviceWorkers = []} map
-  BootWorker serviceId workerId -> _
-    -- h <- defaultHttpHandler
-    -- e <- runDockerT (clientOpts, h) $ do
-    --   e <- createContainer
-    --     -- image of worker                NEED TO CHANGE THIS TO THE RIGHT worker IMAGE!!!!!!!!!!!!!!!!!!!!!
-    --     (defaultCreateOpts "e5bb0b621a8b") { hostConfig = defaultHostConfig { networkMode = NetworkNamed "thicc-net" }}
-    --     CreateOpts
-    --       { containerConfig = defaultContainerConfig
-    --       , hostConfig = defaultHostConfig
-    --       , networkingConfig = _
-    --       }
-    --     (Just $ "worker-" <> serviceConfigName serviceConfig)
-    --     case e of
-    --       Left e -> pure $ Left e
-    --       Right id -> do
-    --         startContainer startOpts id
-    --  case e of
-    --    Left e -> print e
-    --    Right x -> print x
+  BootWorker serviceId workerId -> do
+    container <- runDockerThicc $ do
+      createContainer
+        -- need to get the worker image!!!
+        (defaultCreateOpts "e5bb0b621a8b") { hostConfig = defaultHostConfig { networkMode = NetworkNamed "thicc-net" }}
+        (Just $ unServiceId serviceId <> "-worker-" <> T.pack (show (unWorkerId workerId)))
 
-  KillWorker serviceId workerId ->  _
+    startOpts <- asks envStartOpts
+    runDockerThicc $ startContainer startOpts container
+    details <- runDockerThicc (inspectContainer container)
+    let ip = networkSettingsIpAddress $ networkSettings details
+    let newWorker = Worker workerId $ IPAddress ip
+    return $ M.update (\a -> Just $ a { serviceWorkers = newWorker : serviceWorkers a}) serviceId map
+
+  KillWorker serviceId wId -> do
+    --stop worker
+    container <- findContainer $ unServiceId serviceId <> "-worker-" <> T.pack (show(unWorkerId wId))
+    runDockerThicc $ stopContainer DefaultTimeout container
+    runDockerThicc $ waitContainer container
+    --delete container
+    runDockerThicc $ deleteContainer defaultContainerDeleteOpts container
+    --remove from serviceMap
+    return $ M.update(\a -> Just a {serviceWorkers = (filter (\x -> workerId x /=  wId) $ serviceWorkers a)}) serviceId map
   ProxyRefresh serviceId x -> case x of
     Just [workerId] -> _
     Nothing          -> _
@@ -242,7 +244,7 @@ getService' id = do
   case m of
     Just x -> pure x
     Nothing -> throwError (NoSuchService id)
-  
+
 -- | Gets the next service ID to use.
 isServiceIdAvailable :: ServiceId -> Thicc Bool
 isServiceIdAvailable id = isJust <$> getService id
@@ -294,11 +296,11 @@ instance MonadThicc Thicc where
   deleteService serviceId = do
     addLogEntry (WAL.DeleteService serviceId)
     processLog
-  
+
 runThicc :: ThiccEnv -> ThiccState -> Thicc a -> IO (Either ThiccError a, ThiccState)
 runThicc env initial (Thicc r) =
   runReaderT (runStateT (runExceptT r) initial) env
-  
+
 -- | Constructs a default 'ThiccEnv'.
 -- This requires IO in order to instantiate an HTTP handler.
 mkThiccEnv :: IO ThiccEnv
