@@ -21,11 +21,15 @@ description:         Please see the README on GitHub at <https://github.com/tsan
 
 dependencies:
 - base >= 4.7 && < 5
+- http2-client-grpc
+- aeson
 - docker
 - grpc-etcd-client
 - mtl
 - text
 - containers
+- bytestring
+- scientific
 
 library:
   source-dirs: src
