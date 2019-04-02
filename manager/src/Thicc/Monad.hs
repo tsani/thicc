@@ -1,6 +1,7 @@
 {-# LANGUAGE DeriveGeneric #-}
-{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 module Thicc.Monad where
 
@@ -17,6 +18,7 @@ import Data.Coerce
 import qualified Data.Map as M
 import Data.Maybe ( isJust )
 import Data.Monoid ( (<>) )
+import qualified Data.Text as T
 import Docker.Client
 import GHC.Generics
 import qualified Network.EtcdV3 as Etcd
@@ -63,24 +65,19 @@ data ThiccEnv = ThiccEnv
   , envGrpcClient :: GrpcClient
   }
 
-handleDockerError :: IO (Either DockerError a) -> Thicc a
-handleDockerError ioInput = do
-  output <- liftIO ioInput
-  case output of
-    Left e -> throwError $ DockerError e
-    Right x -> return x
-
-runDockerThicc :: DockerT IO (Either DockerError a) -> Thicc a
-runDockerThicc m = do
-  h <- asks envHttpHandler
-  clientOpts <- asks envClientOpts
-  handleDockerError $ runDockerT (clientOpts, h) m
-
 data ThiccError
   = UnknownError String
+    -- ^ An unknown error occurred
   | ServiceAlreadyExists ServiceId
+    -- ^ A service already exists by that name
   | NoSuchService ServiceId
+    -- ^ The requested service does not exist
   | DockerError DockerError
+    -- ^ An internal docker command failed
+  | SaveFailed
+    -- ^ When a write to etcd fails
+  | InvariantViolated T.Text
+    -- ^ For when internal invariants are violated.
 
 -- | The persistent state of the manager.
 data ThiccState = ThiccState
@@ -96,14 +93,35 @@ type ServiceMap = M.Map ServiceId Service
 instance ToJSON ThiccState
 instance FromJSON ThiccState
 
-serializeState :: ThiccState -> LBS.ByteString
-serializeState state = encode state
+-- | Runs a docker computation that may fail inside the 'Thicc' monad,
+-- rethrowing any docker error.
+runDockerThicc :: DockerT IO (Either DockerError a) -> Thicc a
+runDockerThicc m = do
+  h <- asks envHttpHandler
+  clientOpts <- asks envClientOpts
+  handleDockerError $ runDockerT (clientOpts, h) m
+  where
+    handleDockerError :: IO (Either DockerError a) -> Thicc a
+    handleDockerError ioInput = do
+      output <- liftIO ioInput
+      case output of
+        Left e -> throwError $ DockerError e
+        Right x -> return x
 
 -- | Persists the Thicc state to etcd.
 save :: Thicc ()
 save = do
-  bs <- serializeState <$> get
-  _ -- write bs to etcd
+  bs <- encode <$> get
+  client <- asks envGrpcClient
+  m <- liftIO $ Etcd.put client "thicc-state" (LBS.toStrict bs) Nothing
+  case m of
+    Nothing -> throwError SaveFailed
+    Just x -> pure ()
+
+-- | Computes the name of the container with the proxy for the given
+-- service in it.
+proxyName :: ServiceId -> T.Text
+proxyName (ServiceId name) = "proxy-" <> name
 
 processLogEntry :: WAL.LogEntry -> ServiceMap -> Thicc ServiceMap
 processLogEntry entry map = case entry of
@@ -113,7 +131,7 @@ processLogEntry entry map = case entry of
         createContainer
     -- image of proxy                NEED TO CHANGE THIS TO THE RIGHT PROXY IMAGE!!!!!!!!!!!!!!!!!!!!!
           (defaultCreateOpts "e5bb0b621a8b") { hostConfig = defaultHostConfig { networkMode = NetworkNamed "thicc-net" }}
-          (Just $ "proxy-" <> serviceConfigName serviceConfig)
+          (Just $ proxyName $ ServiceId $ serviceConfigName serviceConfig)
           
 
     startOpts <- asks envStartOpts
@@ -149,8 +167,64 @@ processLogEntry entry map = case entry of
  -- pattern entry type
  -- deal with each of the patterns
 
+-- | Runs the given 'Thicc' computation, and catches docker errors
+-- that may be thrown in it.
+catchDockerError :: Thicc a -> Thicc (Maybe a)
+catchDockerError m = (Just <$> m) `catchError` handler where
+  handler :: ThiccError -> Thicc (Maybe a)
+  handler (DockerError e) = pure Nothing
+  handler e = throwError e
+
+findContainer :: T.Text -> Thicc (Maybe Container)
+findContainer name = do
+  containers <-
+    filter (any (name ==) . containerNames) <$>
+    runDockerThicc (listContainers defaultListOpts)
+  case containers of
+    [] -> pure Nothing
+    [x] -> pure (Just x)
+    _ ->
+      throwError
+      (InvariantViolated $ "multiple containers exist with name " <> name)
+
+-- | Decides whether the postconditions of the 'LogEntry' are already
+-- satisfied.
+--
+-- This is implemented by actually checking whether any required
+-- containers exist or not, and will adjust the 'ThiccState' according
+-- to the semantics of the 'LogEntry'.
+logEntrySatisfied :: LogEntry -> Thicc Bool
+logEntrySatisfied entry =
+  case entry of
+    CreateService conf -> do
+      let id = ServiceId $ serviceConfigName conf
+      let proxy = proxyName id
+      c <- findContainer proxy
+      case c of
+        Nothing -> pure False
+        Just x -> do
+          details <- runDockerThicc $ inspectContainer (containerId x)
+          let ip = networkSettingsIpAddress $ networkSettings details
+          let service =
+                Service { serviceProxyIP = IPAddress ip, serviceWorkers = [] }
+          modify $ \s ->
+            s { thiccServiceMap = M.insert id service $ thiccServiceMap s }
+          pure True
+
 processLog :: Thicc ()
-processLog = _
+processLog = gets thiccWAL >>= go where
+  go [] = pure ()
+  go (entry : entries) = do
+    -- check if the entry's postconditions are already satisfied
+    b <- logEntrySatisfied entry
+    when (not b) $ do
+      map <- gets thiccServiceMap
+      map' <- processLogEntry entry map
+      modify $ \s -> s { thiccServiceMap = map' }
+    -- after executing the entry, shrink the list of entries to process
+    modify $ \s -> s { thiccWAL = entries }
+    -- and persist the state to fault-tolerant storage
+    save
 
 -- | Prepends an entry to the log.
 addLogEntry :: WAL.LogEntry -> Thicc ()
