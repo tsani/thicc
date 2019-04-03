@@ -17,7 +17,7 @@ main = do
   -- loads the last state from etcd or uses the empty one
   -- if there is no saved state / if the saved state fails to parse
   st <- fromMaybe initialThiccState <$> loadState env
-  (s, ips) <- runThicc env st $ do
+  (e, s) <- runThicc env st $ do
     -- create service abc
     (sId, s) <- createService ServiceConfig
       { serviceConfigName = "abc"
@@ -30,6 +30,10 @@ main = do
       , scaleConfigNumber = 3
       }
     pure (s, ips)
+
+  case e of
+    Left e -> print e
+    Right ips -> putStrLn "success"
 
   pure ()
     

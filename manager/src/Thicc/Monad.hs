@@ -89,6 +89,7 @@ data ThiccError
     -- ^ When a write to etcd fails
   | InvariantViolated T.Text
     -- ^ For when internal invariants are violated.
+  deriving Show
 
 -- | The persistent state of the manager.
 data ThiccState = ThiccState
