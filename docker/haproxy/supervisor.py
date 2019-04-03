@@ -37,6 +37,7 @@ def handle_client(conn):
                 break
             f.write(body)
     reload_haproxy()
+    conn.send("ok")
 
 def loop(server):
     while True:

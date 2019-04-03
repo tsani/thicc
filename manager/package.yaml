@@ -32,6 +32,8 @@ dependencies:
 - bytestring
 - scientific
 - lens-family
+- network-simple
+- async
 
 library:
   source-dirs: src

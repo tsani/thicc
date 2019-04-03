@@ -5,6 +5,7 @@
 
 module Thicc.Monad where
 
+import Thicc.ProxyRefresh
 import Thicc.Types
 import Thicc.WAL as WAL
 
@@ -91,6 +92,8 @@ data ThiccError
     -- ^ When a write to etcd fails
   | InvariantViolated T.Text
     -- ^ For when internal invariants are violated.
+  | RefreshFailed T.Text
+    -- ^ When a proxy refresh fails.
   deriving Show
 
 -- | The persistent state of the manager.
@@ -188,7 +191,7 @@ processLogEntry entry = case entry of
     logMsg $ "service proxy ready"
 
     -- actually get the IP address correctly
-    let ip = getIP details
+    ip <- getIP details
     let service = Service
           { serviceProxyIP = IPAddress ip
           , serviceWorkers = I.empty
@@ -250,7 +253,6 @@ processLogEntry entry = case entry of
     putService serviceId
       service { serviceWorkers = deleteWorker wId (serviceWorkers service) }
 
-  -- TODO
   ProxyRefresh serviceId w -> case w of
     Just w -> do
       --create the conf file
@@ -259,9 +261,14 @@ processLogEntry entry = case entry of
       --add line
       service <- getService' serviceId
       let lines = map (\x -> "\nserver " <> (unIPAddress $ workerIP x) <> " " <> (unIPAddress $ workerIP x) <> ":80") w
-      let refresh_conf = base_conf <> T.intercalate "" lines
-      --send refresh string
-      return ()
+      let refreshConf = base_conf <> T.intercalate "" lines
+
+      e <- liftIO $ refreshProxy refreshConf (serviceProxyIP service)
+      case e of
+        Left e -> throwError (RefreshFailed e)
+        Right False -> throwError (RefreshFailed "supervisor did not reply 'ok'")
+        Right True -> pure ()
+
     Nothing ->
       --look at service and find workers to add
       _
