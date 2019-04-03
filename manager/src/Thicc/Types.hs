@@ -54,7 +54,7 @@ instance ToJSON Service
 instance FromJSON Service
 
 newtype IPAddress =
-  IPAddress T.Text
+  IPAddress {unIPAddress :: T.Text}
   deriving (Eq, Ord, Show, ToJSON, FromJSON)
 
 data Worker = Worker

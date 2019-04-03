@@ -12,6 +12,6 @@ data LogEntry
   = CreateService ServiceConfig
   | BootWorker ServiceId WorkerId
   | KillWorker ServiceId WorkerId
-  | ProxyRefresh ServiceId (Maybe [WorkerId])
+  | ProxyRefresh ServiceId (Maybe [Worker])
   | DeleteService ServiceId
   deriving (Eq, Ord, Show, Generic, FromJSON, ToJSON)

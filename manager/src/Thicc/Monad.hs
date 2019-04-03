@@ -29,6 +29,10 @@ import Proto.Etcd.Etcdserver.Etcdserverpb.Rpc_Fields ( kvs, value )
 import qualified Network.EtcdV3 as Etcd
 import Network.GRPC.Client.Helpers ( GrpcClient, setupGrpcClient )
 
+
+base_conf = T.pack "global \nlog /dev/log local0 notice \nstats socket /var/run/haproxy/default.admin.sock mode 660 level admin \nstats timeout 30s \nuser haproxy \ngroup haproxy \ndaemon \n\ndefaults \nlog global \nmode tcp \ntimeout connect 50s \ntimeout client  50s \ntimeout server  50s \n\nfrontend proxy \nbind *:80 \ndefault_backend backend \n\nbackend service \nbalance leastconn"
+
+
 -- | Describes an abstract monad with the high-level capabilities of the manager.
 class MonadThicc m where
   -- | Launches a new service.
@@ -136,6 +140,14 @@ proxyName (ServiceId name) = "proxy-" <> name
 workerName :: ServiceId -> WorkerId -> T.Text
 workerName (ServiceId s) (WorkerId n) = s <> "-worker-" <> T.pack (show n)
 
+-- | Retrives the worker IP address or throws an error if it does not exist
+getIP :: ContainerDetails -> Thicc T.Text
+getIP details = case (networkSettingsNetworks $ networkSettings details) of
+                []   -> throwError (InvariantViolated "No network")
+                (Network _ options):xs -> return (networkOptionsIpAddress options)
+
+
+
 -- | Starts the given container (which must have already been created)
 -- and inspects it.
 startContainer' :: ContainerID -> Thicc ContainerDetails
@@ -157,7 +169,7 @@ processLogEntry entry = case entry of
         (Just $ proxyName sId)
 
     details <- startContainer' cId
-    let ip = networkSettingsIpAddress $ networkSettings details
+    ip <- getIP details
     let service = Service { serviceProxyIP = IPAddress ip, serviceWorkers = I.empty }
 
     modify $ \s ->
@@ -175,7 +187,7 @@ processLogEntry entry = case entry of
         (Just containerName)
 
     details <- startContainer' cId
-    let ip = networkSettingsIpAddress $ networkSettings details
+    ip <- getIP details
     let newWorker = Worker { workerIP = IPAddress ip }
 
     putService serviceId
@@ -204,11 +216,22 @@ processLogEntry entry = case entry of
       service { serviceWorkers = deleteWorker wId (serviceWorkers service) }
 
   -- TODO
-  -- ProxyRefresh serviceId x -> case x of
-  --   Just workerIds -> _
-  --   Nothing -> _
+  ProxyRefresh serviceId w -> case w of
+    Just w -> do
+      --create the conf file
+      let refresh_conf = base_conf
+      --foreach worker ip in the service
+      --add line
+      service <- getService' serviceId
+      let lines = map (\x -> "\nserver " <> (unIPAddress $ workerIP x) <> " " <> (unIPAddress $ workerIP x) <> ":80") w
+      let refresh_conf = base_conf <> T.intercalate "" lines
+      --send refresh string
+      return ()
+    Nothing ->
+      --look at service and find workers to add
+      _
 
-  -- DeleteService serviceId -> _
+  DeleteService serviceId -> _
 
 -- | Runs the given 'Thicc' computation, and catches docker errors
 -- that may be thrown in it.
@@ -272,7 +295,7 @@ logEntrySatisfied entry =
         -- if not, then make sure it's not i nthe worker map for the service
         Nothing -> do
           putService sId
-           service { serviceWorkers = deleteWorker wId (serviceWorkers service) }
+            service { serviceWorkers = deleteWorker wId (serviceWorkers service) }
           pure True
         -- if so, then the postconditions are not satisfied
         Just _ -> pure False
@@ -360,19 +383,19 @@ instance MonadThicc Thicc where
 
   scaleService config = do
     let serviceId = scaleConfigServiceId config
-    workerIds <- I.keys . serviceWorkers <$> getService' serviceId
+    workerIds <- I.assocs . serviceWorkers <$> getService' serviceId
     let workerCount = length workerIds
     let baseId =
           case workerIds of
             [] -> 0
-            _  -> maximum workerIds + 1
+            _  -> maximum (map fst workerIds) + 1
     let delta = scaleConfigNumber config - workerCount
     if delta < 0 then do
       let delta' = negate delta
       let idsToKill = take delta' workerIds
 
-      addLogEntry (WAL.ProxyRefresh serviceId (Just $ drop delta' (coerce workerIds)))
-      forM_ idsToKill $ \idToKill ->
+      addLogEntry (WAL.ProxyRefresh serviceId (Just $ map snd $ drop delta' (workerIds)))
+      forM_ idsToKill $ \(idToKill,_) ->
         addLogEntry $ WAL.KillWorker serviceId (WorkerId idToKill)
     else do
       let newIds = take delta $ iterate (1+) baseId
