@@ -11,6 +11,8 @@ import qualified Data.Text as T
 import Data.Word
 import GHC.Generics
 
+type Command = [T.Text]
+
 newtype ServiceId = ServiceId { unServiceId :: T.Text }
   deriving (Eq, Ord, Show, ToJSON, FromJSON, ToJSONKey, FromJSONKey)
 
@@ -19,7 +21,7 @@ newtype WorkerId = WorkerId { unWorkerId :: Int }
 
 data ServiceConfig = ServiceConfig
   { serviceConfigName :: T.Text -- ^ The name of the service to create.
-  , serviceCommand :: String -- ^ The command to run on each worker booted into the service.
+  , serviceConfigCommand :: Command -- ^ The command to run on each worker booted into the service.
   }
   deriving (Eq, Ord, Show, Generic)
 
@@ -44,11 +46,13 @@ data Service = Service
   { serviceProxyIP :: IPAddress
     -- ^ The IP address of the load balancer for this service.
   , serviceWorkers :: WorkerMap
+  , serviceCommand :: [T.Text]
   }
   deriving (Eq, Ord, Show, Generic)
 
-emptyService :: IPAddress -> Service
-emptyService ip = Service { serviceProxyIP = ip, serviceWorkers = I.empty }
+emptyService :: IPAddress -> Command -> Service
+emptyService ip cmd =
+  Service { serviceProxyIP = ip, serviceWorkers = I.empty, serviceCommand = cmd }
 
 instance ToJSON Service
 instance FromJSON Service

@@ -29,9 +29,11 @@ import Proto.Etcd.Etcdserver.Etcdserverpb.Rpc_Fields ( kvs, value )
 import qualified Network.EtcdV3 as Etcd
 import Network.GRPC.Client.Helpers ( GrpcClient, setupGrpcClient )
 
-
 base_conf = T.pack "global \nlog /dev/log local0 notice \nstats socket /var/run/haproxy/default.admin.sock mode 660 level admin \nstats timeout 30s \nuser haproxy \ngroup haproxy \ndaemon \n\ndefaults \nlog global \nmode tcp \ntimeout connect 50s \ntimeout client  50s \ntimeout server  50s \n\nfrontend proxy \nbind *:80 \ndefault_backend backend \n\nbackend service \nbalance leastconn"
 
+thiccWorkerImageId = "b0ff57f847d0"
+thiccProxyImageId = "2d40a8b62d82"
+thiccStateKey = "thicc-state"
 
 -- | Describes an abstract monad with the high-level capabilities of the manager.
 class MonadThicc m where
@@ -120,8 +122,6 @@ runDockerThicc m = do
         Left e -> throwError $ DockerError e
         Right x -> return x
 
-thiccStateKey = "thicc-state"
-
 -- | Persists the Thicc state to etcd.
 save :: Thicc ()
 save = do
@@ -157,6 +157,9 @@ startContainer' cId = do
   runDockerThicc $ startContainer startOpts cId
   runDockerThicc (inspectContainer cId)
 
+logMsg :: String -> Thicc ()
+logMsg = liftIO . putStrLn
+
 processLogEntry :: WAL.LogEntry -> Thicc ()
 processLogEntry entry = case entry of
   CreateService serviceConfig -> do
@@ -165,31 +168,62 @@ processLogEntry entry = case entry of
     cId <- runDockerThicc $ do
      -- image of proxy: NEED TO CHANGE THIS TO THE RIGHT PROXY IMAGE!
       let hostConfig = defaultHostConfig { networkMode = NetworkNamed "thicc-net" }
+
       createContainer
-        (defaultCreateOpts "e5bb0b621a8b") { hostConfig = hostConfig }
+        CreateOpts
+        { hostConfig = hostConfig
+        , containerConfig =
+          (defaultContainerConfig thiccProxyImageId) { cmd = ["dummy"] }
+        -- we need to throw in this dummy argument (which gets passed to the supervisor and ignored)
+        -- to circumvent a bug in aeson which causes empty lists to be serialized as null
+        -- consequently, dockerd fails to parse null back to an empty list.
+        -- by putting something in the list, we ensure that dockerd successfully parses the json
+        , networkingConfig = NetworkingConfig mempty
+        }
         (Just $ proxyName sId)
 
+    logMsg $ "created service proxy " ++ show cId
+
     details <- startContainer' cId
-    ip <- getIP details
-    let service = Service { serviceProxyIP = IPAddress ip, serviceWorkers = I.empty }
+    logMsg $ "service proxy ready"
+
+    -- actually get the IP address correctly
+    let ip = getIP details
+    let service = Service
+          { serviceProxyIP = IPAddress ip
+          , serviceWorkers = I.empty
+          , serviceCommand = serviceConfigCommand serviceConfig
+          }
 
     modify $ \s ->
       s { thiccServiceMap = M.insert sId service $ thiccServiceMap s }
 
   BootWorker serviceId workerId -> do
+    logMsg $ "trying to boot " ++ show workerId
     service <- getService' serviceId
+
+    logMsg $ "found " ++ show serviceId
 
     cId <- runDockerThicc $ do
       let containerName = workerName serviceId workerId
       let hostConfig = defaultHostConfig { networkMode = NetworkNamed "thicc-net" }
+      let createOpts = defaultCreateOpts thiccWorkerImageId
       createContainer
-        -- need to get the worker image!!!
-        (defaultCreateOpts "e5bb0b621a8b") { hostConfig = hostConfig }
+        createOpts
+        { hostConfig = hostConfig
+        , containerConfig = (containerConfig createOpts)
+          { cmd = serviceCommand service
+          }
+        }
         (Just containerName)
+
+    logMsg $ "worker container created"
 
     details <- startContainer' cId
     ip <- getIP details
     let newWorker = Worker { workerIP = IPAddress ip }
+
+    logMsg $ "started worker " ++ show newWorker
 
     putService serviceId
       service { serviceWorkers = insertWorker workerId newWorker (serviceWorkers service) }
@@ -270,8 +304,9 @@ logEntrySatisfied entry =
       case m of
         Nothing -> pure False
         Just (_, ip) -> do
+          let cmd = serviceConfigCommand conf
           modify $ \s ->
-            s { thiccServiceMap = M.insert id (emptyService ip) $ thiccServiceMap s }
+            s { thiccServiceMap = M.insert id (emptyService ip cmd) $ thiccServiceMap s }
           pure True
 
     BootWorker sId wId -> do
@@ -329,21 +364,26 @@ logEntrySatisfied entry =
           )
 
 processLog :: Thicc ()
-processLog = gets thiccWAL >>= go where
-  go [] = pure ()
-  go (entry : entries) = do
-    -- check if the entry's postconditions are already satisfied
-    b <- logEntrySatisfied entry
-    when (not b) $ processLogEntry entry
-    -- after executing the entry, shrink the list of entries to process
-    modify $ \s -> s { thiccWAL = entries }
-    -- and persist the state to fault-tolerant storage
-    save
+processLog = do
+  wal <- gets thiccWAL
+  logMsg $ "processing WAL with " ++ show (length wal) ++ " entries"
+  go wal
+  where
+    go [] = pure ()
+    go (entry : entries) = do
+      -- check if the entry's postconditions are already satisfied
+      b <- logEntrySatisfied entry
+      when (not b) $ processLogEntry entry
+      -- after executing the entry, shrink the list of entries to process
+      modify $ \s -> s { thiccWAL = entries }
+      -- and persist the state to fault-tolerant storage
+      save
+      go entries
 
 -- | Prepends an entry to the log.
 addLogEntry :: WAL.LogEntry -> Thicc ()
 addLogEntry entry = do
-  modify $ \s -> s { thiccWAL = entry : thiccWAL s }
+  modify $ \s -> s { thiccWAL = thiccWAL s ++ [entry] }
   save
 
 putService :: ServiceId -> Service -> Thicc ()
@@ -362,16 +402,12 @@ getService' id = do
     Just x -> pure x
     Nothing -> throwError (NoSuchService id)
 
--- | Gets the next service ID to use.
-isServiceIdAvailable :: ServiceId -> Thicc Bool
-isServiceIdAvailable id = isJust <$> getService id
-
 instance MonadThicc Thicc where
   createService config = do
     let id = ServiceId $ serviceConfigName config
     do
-      b <- isServiceIdAvailable id
-      when (not b) $ throwError (ServiceAlreadyExists id)
+      s <- getService id
+      when (isJust s) $ throwError (ServiceAlreadyExists id)
 
     addLogEntry (WAL.CreateService config)
     processLog

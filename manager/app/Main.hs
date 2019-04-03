@@ -16,12 +16,21 @@ main = do
   env <- mkThiccEnv
   -- loads the last state from etcd or uses the empty one
   -- if there is no saved state / if the saved state fails to parse
-  st <- fromMaybe initialThiccState <$> loadState env
+  st <- do
+    st <- loadState env
+    case st of
+      Nothing -> do
+        putStrLn "No state to load"
+        pure initialThiccState
+      Just x -> do
+        putStrLn "Loaded state from etcd"
+        pure x
+
   (e, s) <- runThicc env st $ do
     -- create service abc
     (sId, s) <- createService ServiceConfig
       { serviceConfigName = "abc"
-      , serviceCommand = "nc -lkp 80"
+      , serviceConfigCommand = ["nc", "-lkp", "80"]
       }
 
     -- boot three workers in the service
