@@ -269,9 +269,20 @@ processLogEntry entry = case entry of
         Right False -> throwError (RefreshFailed "supervisor did not reply 'ok'")
         Right True -> pure ()
 
-    Nothing ->
+    Nothing -> do
+
+
       --look at service and find workers to add
-      _
+      service <- getService' serviceId
+      let workers = I.elems $ serviceWorkers service
+      let lines = map (\x -> "\nserver " <> (unIPAddress $ workerIP x) <> " " <> (unIPAddress $ workerIP x) <> ":80") workers
+      let refreshConf = base_conf <> T.intercalate "" lines
+      --send refresh string
+      e <- liftIO $ refreshProxy refreshConf (serviceProxyIP service)
+      case e of
+        Left e -> throwError (RefreshFailed e)
+        Right False -> throwError (RefreshFailed "supervisor did not reply 'ok'")
+        Right True -> pure ()
 
   DeleteService serviceId -> _
 
