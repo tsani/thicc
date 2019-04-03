@@ -19,9 +19,9 @@ import Control.Concurrent.Async
 refreshProxy :: T.Text -> IPAddress -> IO (Either T.Text Bool)
 refreshProxy payload (IPAddress ip) = do
   a <- async $ TCP.connect (T.unpack ip) "1500" go
-  e <- race (delaySec 5) (waitCatch a) -- wait for the worker for 5 seconds
+  e <- race (delaySec 3) (waitCatch a) -- wait for the worker for 5 seconds
   pure $ case e of
-    Left _ -> Left "timed out"
+    Left _ -> Right True
     Right e ->
       case e of
         Left e -> Left (T.pack $ show e)

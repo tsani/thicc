@@ -30,10 +30,10 @@ import Proto.Etcd.Etcdserver.Etcdserverpb.Rpc_Fields ( kvs, value )
 import qualified Network.EtcdV3 as Etcd
 import Network.GRPC.Client.Helpers ( GrpcClient, setupGrpcClient )
 
-base_conf = T.pack "global \nlog /dev/log local0 notice \nstats socket /var/run/haproxy/default.admin.sock mode 660 level admin \nstats timeout 30s \nuser haproxy \ngroup haproxy \ndaemon \n\ndefaults \nlog global \nmode tcp \ntimeout connect 50s \ntimeout client  50s \ntimeout server  50s \n\nfrontend proxy \nbind *:80 \ndefault_backend backend \n\nbackend service \nbalance leastconn"
+base_conf = T.pack "global \nstats timeout 30s \nuser haproxy \ngroup haproxy \ndaemon \n\ndefaults \nmode tcp \ntimeout connect 50s \ntimeout client  50s \ntimeout server  50s \n\nfrontend proxy \nbind *:80 \ndefault_backend service \n\nbackend service \nbalance leastconn"
 
-thiccWorkerImageId = "b0ff57f847d0"
-thiccProxyImageId = "2d40a8b62d82"
+thiccWorkerImageId = "b08f8312d04f"
+thiccProxyImageId = "ded3c63ab751"
 thiccStateKey = "thicc-state"
 
 -- | Describes an abstract monad with the high-level capabilities of the manager.
@@ -245,9 +245,11 @@ processLogEntry entry = case entry of
 
     let cid = containerId container
     runDockerThicc $ stopContainer DefaultTimeout cid
+    logMsg $ "stopped " ++ show wId ++ " and waiting"
     runDockerThicc $ waitContainer cid
     --delete container
     runDockerThicc $ deleteContainer defaultContainerDeleteOpts cid
+    logMsg $ "deleted " ++ show cid
     --remove from serviceMap
 
     putService serviceId
@@ -270,8 +272,6 @@ processLogEntry entry = case entry of
         Right True -> pure ()
 
     Nothing -> do
-
-
       --look at service and find workers to add
       service <- getService' serviceId
       let workers = I.elems $ serviceWorkers service
@@ -284,7 +284,7 @@ processLogEntry entry = case entry of
         Right False -> throwError (RefreshFailed "supervisor did not reply 'ok'")
         Right True -> pure ()
 
-  DeleteService serviceId -> _
+  DeleteService serviceId -> error "yolo"
 
 -- | Runs the given 'Thicc' computation, and catches docker errors
 -- that may be thrown in it.
@@ -296,9 +296,13 @@ catchDockerError m = (Just <$> m) `catchError` handler where
 
 findContainer :: T.Text -> Thicc (Maybe Container)
 findContainer name = do
-  containers <-
-    filter (any (name ==) . containerNames) <$>
-    runDockerThicc (listContainers defaultListOpts)
+  containers <- do
+    cs <- runDockerThicc (listContainers defaultListOpts)
+    let cs' = filter (any ("/" <> name ==) . containerNames) cs
+    -- logMsg $ "listContainers: " ++ show cs
+    -- logMsg $ "filtered: " ++ show cs'
+    pure cs'
+
   case containers of
     [] -> pure Nothing
     [x] -> pure (Just x)
@@ -350,9 +354,12 @@ logEntrySatisfied entry =
         Nothing -> do
           putService sId
             service { serviceWorkers = deleteWorker wId (serviceWorkers service) }
+          logMsg $ "KillWorker postcondition satisfied"
           pure True
         -- if so, then the postconditions are not satisfied
-        Just _ -> pure False
+        Just _ -> do
+          logMsg $ "KillWorker postcondition not satisfied"
+          pure False
 
     ProxyRefresh _ _ ->
       -- Refresh is idempotent, so there's no harm.
@@ -373,6 +380,7 @@ logEntrySatisfied entry =
     -- get the IP address of the container with the given name
     getIdIp name = do
       c <- findContainer name
+      logMsg $ "found container " ++ show c ++ " for name " ++ T.unpack name
       for c $ \x -> do
         let cId = containerId x
         details <- runDockerThicc $ inspectContainer cId

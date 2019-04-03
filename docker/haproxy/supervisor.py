@@ -3,10 +3,14 @@
 from socket import socket
 import subprocess as sp
 from os import path
+import sys
 
 SERVER_ADDR = ('', 1500) # host to bind and port
 CONF_PATH = '/usr/local/etc/haproxy/haproxy.cfg'
 PID_FILE = '/run/haproxy.pid'
+
+def eprint(*args, **kwargs):
+    print(*args, file=sys.stderr, **kwargs)
 
 def reload_haproxy():
     """Reloads HAProxy or starts it. The reload is a soft reload and
@@ -24,7 +28,7 @@ def reload_haproxy():
 
     sp.run(cmd)
 
-    print("Reloaded HAProxy.")
+    eprint("Reloaded HAProxy.")
 
 def handle_client(conn):
     """Copies whatever the clients sends us into the HAProxy config
@@ -37,14 +41,14 @@ def handle_client(conn):
                 break
             f.write(body)
     reload_haproxy()
-    conn.send("ok")
+    conn.send("ok".encode('utf-8'))
 
 def loop(server):
     while True:
         conn, addr = server.accept()
-        print("Connection received.")
+        eprint("Connection received.")
         handle_client(conn)
-        print("Connection closed.")
+        eprint("Connection closed.")
         conn.close()
 
 def main():

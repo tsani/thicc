@@ -34,11 +34,18 @@ main = do
       }
 
     -- boot three workers in the service
-    ips <- scaleService ScaleConfig
-      { scaleConfigServiceId = sId
-      , scaleConfigNumber = 3
+    scaleService ScaleConfig
+      { scaleConfigServiceId = ServiceId "abc"
+      , scaleConfigNumber = 2
       }
-    pure (s, ips)
+
+    -- boot three workers in the service
+    scaleService ScaleConfig
+      { scaleConfigServiceId = ServiceId "abc"
+      , scaleConfigNumber = 1
+      }
+
+    pure ()
 
   case e of
     Left e -> print e
