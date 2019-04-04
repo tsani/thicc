@@ -27,11 +27,17 @@ def main():
 
         if nextCommand == "create":
             #check right # args
-            if length < 4:
+            if length < 5:
                 badInput()
+            option = args[4]
             serviceName = args[3]
-            containerCommand = args[4:]
-            createService(serviceName, containerCommand)
+            if option == "-b":
+                createBlobService(serviceName, args[5])
+            elif option == "-c":
+                containerCommand = args[5:]
+                createService(serviceName, containerCommand)
+            else:
+                badInput()
 
         elif nextCommand == "delete":
                 #check right # args
@@ -93,6 +99,11 @@ def createService(serviceName, command):
     r = send('put', 'services/' + serviceName, payload)
     showResponse(r)
 
+def createBlobService(serviceName,blobName):
+    print("create blob service")
+    payload = {"blob":blobName}
+    r = send('put', 'services/' + serviceName, payload)
+    showResponse(r)
 
 #scale service
 def scaleService(serviceName, numberOfWorkers):
