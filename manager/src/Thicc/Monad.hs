@@ -299,10 +299,7 @@ findContainer name = do
   containers <- do
     cs <- runDockerThicc (listContainers defaultListOpts)
     let cs' = filter (any ("/" <> name ==) . containerNames) cs
-    -- logMsg $ "listContainers: " ++ show cs
-    -- logMsg $ "filtered: " ++ show cs'
     pure cs'
-
   case containers of
     [] -> pure Nothing
     [x] -> pure (Just x)

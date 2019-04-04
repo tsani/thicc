@@ -34,6 +34,11 @@ dependencies:
 - lens-family
 - network-simple
 - async
+- servant-server
+- servant
+- wai
+- wai-extra
+- warp
 
 library:
   source-dirs: src

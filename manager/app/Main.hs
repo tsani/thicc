@@ -3,6 +3,8 @@
 
 module Main where
 
+import Web ( webMain )
+
 import Thicc.Monad
 import Thicc.Types
 
@@ -26,32 +28,34 @@ main = do
         putStrLn "Loaded state from etcd"
         pure x
 
-  (e, s) <- runThicc env st $ do
-    -- create service abc
-    (sId, s) <- createService ServiceConfig
-      { serviceConfigName = "abc"
-      , serviceConfigCommand = ["nc", "-lkp", "80"]
-      }
+  webMain env st
 
-    -- boot three workers in the service
-    scaleService ScaleConfig
-      { scaleConfigServiceId = ServiceId "abc"
-      , scaleConfigNumber = 2
-      }
+  -- (e, s) <- runThicc env st $ do
+  --   -- create service abc
+  --   (sId, s) <- createService ServiceConfig
+  --     { serviceConfigName = "abc"
+  --     , serviceConfigCommand = ["nc", "-lkp", "80"]
+  --     }
 
-    -- boot three workers in the service
-    scaleService ScaleConfig
-      { scaleConfigServiceId = ServiceId "abc"
-      , scaleConfigNumber = 1
-      }
+  --   -- boot three workers in the service
+  --   scaleService ScaleConfig
+  --     { scaleConfigServiceId = ServiceId "abc"
+  --     , scaleConfigNumber = 2
+  --     }
 
-    pure ()
+  --   -- boot three workers in the service
+  --   scaleService ScaleConfig
+  --     { scaleConfigServiceId = ServiceId "abc"
+  --     , scaleConfigNumber = 1
+  --     }
 
-  case e of
-    Left e -> print e
-    Right ips -> putStrLn "success"
+  --   pure ()
 
-  pure ()
+  -- case e of
+  --   Left e -> print e
+  --   Right ips -> putStrLn "success"
+
+  -- pure ()
     
   -- h <- defaultHttpHandler
   -- e <- runDockerT (clientOpts, h) $ do
