@@ -1,4 +1,4 @@
-import requests 
+import requests
 import json
 import optparse
 import sys
@@ -11,32 +11,33 @@ length = leng(args)
 if length < 2:
     badInput()
 
-command = args[1]
+command.toLower() = args[1]
 
-if command = "?":
-    print("Command options include ..... .... ....")
+if command == "?":
+    print("Command options include:\ncreate <service-name> <command>\nscale
+        <service-name> <total-workers>\ndelete <service-name>")
 
-elif command = "create":
+elif command == "create":
     #check right # args
     if length < 3:
         badInput()
 
     serviceName = args[2]
-    containerCommand = ' '.join(args[3:])
+    containerCommand = args[3:]
 
     createService(serviceName, containerCommand)
 
-elif command = "delete":
+elif command == "delete":
     #check right # args
     if length != 3:
         badInput()
-    
+
     serviceName = args[2]
 
     deleteService(serviceName)
 
 
-elif command = "scale":
+elif command == "scale":
     #check right # args
     if length != 4:
         badInput()
@@ -46,8 +47,10 @@ elif command = "scale":
 
     scaleService(serviceName, numWorkers)
 
+else:
+    badInput()
 
-    #create service 
+#create service
 def createService(serviceName, command):
     payload = {"command":command}
     r = requests.put(host + serviceName, payload)
@@ -55,7 +58,7 @@ def createService(serviceName, command):
     print(r.json)
 
 
-    #scale service
+#scale service
 def scaleService(serviceName, numberOfWorkers):
     num = 0
     try:
