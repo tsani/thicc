@@ -1,3 +1,5 @@
+#!/usr/bin/env python
+
 import requests
 import json
 import optparse
@@ -5,57 +7,70 @@ import sys
 
 host = 'http://localhost:7133/services/'
 args = sys.argv
-length = leng(args)
+length = len(args)
 
 
 if length < 2:
     badInput()
 
-command.toLower() = args[1]
+command = args[1].lower()
 
-if command == "?":
-    print("Command options include:\ncreate <service-name> <command>\nscale
-        <service-name> <total-workers>\ndelete <service-name>")
-
-elif command == "create":
-    #check right # args
-    if length < 3:
+def main():
+    if command == "?":
+        print("Command options include:\ncreate <service-name> <command>\nscale <service-name> <total-workers>\ndelete <service-name>")
+        
+    elif command == "create":
+        #check right # args
+        if length < 3:
+            badInput()
+            
+        serviceName = args[2]
+        containerCommand = args[3:]
+        
+        createService(serviceName, containerCommand)
+            
+    elif command == "delete":
+            #check right # args
+        if length != 3:
+            badInput()
+            
+        serviceName = args[2]
+        
+        deleteService(serviceName)
+            
+            
+    elif command == "scale":
+        #check right # args
+        if length != 4:
+            badInput()
+            
+        serviceName = args[2]
+        numWorkers = args[3]
+        
+        scaleService(serviceName, numWorkers)
+            
+    else:
         badInput()
 
-    serviceName = args[2]
-    containerCommand = args[3:]
+def send(verb, endpoint, payload=None):
+    f = getattr(requests, verb)
+    if payload is None:
+        return f(host + endpoint)
 
-    createService(serviceName, containerCommand)
-
-elif command == "delete":
-    #check right # args
-    if length != 3:
-        badInput()
-
-    serviceName = args[2]
-
-    deleteService(serviceName)
-
-
-elif command == "scale":
-    #check right # args
-    if length != 4:
-        badInput()
-
-    serviceName = args[2]
-    numWorkers = args[3]
-
-    scaleService(serviceName, numWorkers)
-
-else:
-    badInput()
-
+    return f(
+        host + endpoint,
+        json.dumps(payload),
+        headers={
+            "Content-Type": "application/json"
+        }
+    )
+        
 #create service
 def createService(serviceName, command):
+    print("createService")
     payload = {"command":command}
-    r = requests.put(host + serviceName, payload)
-
-    print(r.json)
+    r = send('put', serviceName, payload)
+    print(r.json())
 
 
 #scale service
@@ -68,17 +83,19 @@ def scaleService(serviceName, numberOfWorkers):
         exit(1)
 
     payload = {"number":num}
-    r = requests.post(host + serviceName, payload)
+    r = send('post', serviceName, payload)
 
     print(r.json)
 
-
     #delete service
 def deleteService(serviceName):
-    r = requests.delete(host + serviceName)
+    r = send('delete', serviceName)
     print(r.json)
 
 #if we get unexpected input
 def badInput():
     print("Error: enter a valid command. Execute \'thiccc ?\' for help")
     exit(1)
+
+if __name__ == '__main__':
+    main()
