@@ -32,6 +32,11 @@ import Network.GRPC.Client.Helpers ( GrpcClient, setupGrpcClient )
 
 base_conf = T.pack "global \nstats timeout 30s \nuser haproxy \ngroup haproxy \ndaemon \n\ndefaults \nmode tcp \ntimeout connect 50s \ntimeout client  50s \ntimeout server  50s \n\nfrontend proxy \nbind *:80 \ndefault_backend service \n\nbackend service \nbalance leastconn"
 
+dockerFileConf = "FROM alpine:3.9\nENTRYPOINT [\"./entry\"]"
+
+dockerFilePath = "../docker/blob_worker/"
+
+
 thiccWorkerImageId = "b08f8312d04f"
 thiccProxyImageId = "ded3c63ab751"
 thiccStateKey = "thicc-state"
@@ -149,6 +154,30 @@ getIP :: ContainerDetails -> Thicc T.Text
 getIP details = case (networkSettingsNetworks $ networkSettings details) of
                 []   -> throwError (InvariantViolated "No network")
                 (Network _ options):xs -> return (networkOptionsIpAddress options)
+
+
+
+buildImage :: FilePath -> T.Text -> Thicc ImageID
+buildImage pathToExe serviceId = do
+  -- create new docker image
+  liftIO $ writeFile dockerFilePath (dockerFileConf ++ "\nCOPY " ++ pathToExe ++ " ./entry")
+
+  out <- runDockerThicc $ buildImageFromDockerfile (defaultBuildOpts serviceId) pathToExe
+
+  findImage serviceId
+
+
+findImage :: T.Text -> Thicc ImageID
+findImage imageName = do
+  --get image id
+  images <- runDockerThicc $ listImages defaultListOpts
+
+  image <- case filter (any (imageName <> ":latest" ==) . imageRepoTags) images of
+                  [x] -> pure x
+                  _ -> throwError (InvariantViolated $ "Multiple images have same tag")
+
+  return $ imageId image
+
 
 
 
