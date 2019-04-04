@@ -70,8 +70,7 @@ def createService(serviceName, command):
     print("createService")
     payload = {"command":command}
     r = send('put', serviceName, payload)
-    print(r.json())
-
+    showResponse(r)
 
 #scale service
 def scaleService(serviceName, numberOfWorkers):
@@ -84,13 +83,15 @@ def scaleService(serviceName, numberOfWorkers):
 
     payload = {"number":num}
     r = send('post', serviceName, payload)
-
-    print(r.json)
+    showResponse(r)
 
     #delete service
 def deleteService(serviceName):
     r = send('delete', serviceName)
-    print(r.json)
+    showResponse(r)
+
+def showResponse(r):
+    print('success' if r.text == '' else r.json())
 
 #if we get unexpected input
 def badInput():
