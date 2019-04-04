@@ -211,7 +211,7 @@ processLogEntry entry = case entry of
         p <- getBlobPath blob
         b <- liftIO $ doesFileExist p
         when (not b) $ throwError (NoSuchBlob blob)
-        id <- buildImage p name
+        id <- buildImage p serviceName
         pure $ ExeImage id
 
     cId <- runDockerThicc $ do
@@ -392,15 +392,18 @@ logEntrySatisfied :: LogEntry -> Thicc Bool
 logEntrySatisfied entry =
   case entry of
     CreateService conf -> do
-      let id = ServiceId $ serviceConfigName conf
+      let serviceName = serviceConfigName conf
+      let id = ServiceId serviceName
       let containerName = proxyName id
       m <- getIdIp containerName
       case m of
         Nothing -> pure False
         Just (_, ip) -> do
-          let cmd = serviceConfigCommand conf
+          exe <- case serviceConfigCreate conf of
+            CreateCommand cmd -> pure $ ExeCommand cmd
+            CreateBlob _ -> ExeImage <$> findImage serviceName
           modify $ \s ->
-            s { thiccServiceMap = M.insert id (emptyService ip cmd) $ thiccServiceMap s }
+            s { thiccServiceMap = M.insert id (emptyService ip exe) $ thiccServiceMap s }
           pure True
 
     BootWorker sId wId -> do

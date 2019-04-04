@@ -83,14 +83,14 @@ server env svar = service :<|> blob where
     runThicc' m = liftIO $ modifyMVar svar $ \st ->
       swap <$> runThicc env st m
 
-    create (CreateService command) =
+    create conf =
       runThicc' m >>=
       either interpretError (\(_, s) -> pure (ServiceCreated $ serviceProxyIP s))
       where
         m = do
           createService ServiceConfig
             { serviceConfigName = sId
-            , serviceConfigCommand = command
+            , serviceConfigCreate = conf
             }
 
     delete =
