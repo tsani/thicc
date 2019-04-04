@@ -29,15 +29,13 @@ import Lens.Family2 ( (^.) )
 import Proto.Etcd.Etcdserver.Etcdserverpb.Rpc_Fields ( kvs, value )
 import qualified Network.EtcdV3 as Etcd
 import Network.GRPC.Client.Helpers ( GrpcClient, setupGrpcClient )
+import System.Directory ( doesFileExist )
+import System.FilePath ( FilePath, (</>) )
 
 base_conf = T.pack "global \nstats timeout 30s \nuser haproxy \ngroup haproxy \ndaemon \n\ndefaults \nmode tcp \ntimeout connect 50s \ntimeout client  50s \ntimeout server  50s \n\nfrontend proxy \nbind *:80 \ndefault_backend service \n\nbackend service \nbalance leastconn"
 
 dockerFileConf = "FROM alpine:3.9\nENTRYPOINT [\"./entry\"]"
-
 dockerFilePath = "../docker/blob_worker/"
-
-
-thiccWorkerImageId = "b08f8312d04f"
 thiccProxyImageId = "ded3c63ab751"
 thiccStateKey = "thicc-state"
 
@@ -80,6 +78,7 @@ data ThiccEnv = ThiccEnv
   , envStartOpts :: StartOpts
   , envClientOpts :: DockerClientOpts
   , envGrpcClient :: GrpcClient
+  , envBlobDir :: FilePath
   }
 
 data ThiccError
@@ -91,6 +90,8 @@ data ThiccError
     -- ^ The requested service does not exist
   | NoSuchContainer T.Text
     -- ^ The requested container does not exist (by name)
+  | NoSuchBlob BlobName
+    -- ^ When a blob that doesn't exist is requested.
   | DockerError DockerError
     -- ^ An internal docker command failed
   | SaveFailed
@@ -192,11 +193,27 @@ startContainer' cId = do
 logMsg :: String -> Thicc ()
 logMsg = liftIO . putStrLn
 
+getBlobPath :: BlobName -> Thicc FilePath
+getBlobPath (BlobName name) = do
+  base <- asks envBlobDir
+  pure $ base </> T.unpack name
+
 processLogEntry :: WAL.LogEntry -> Thicc ()
 processLogEntry entry = case entry of
   CreateService serviceConfig -> do
     --create container for proxy
-    let sId = ServiceId $ serviceConfigName serviceConfig
+    let serviceName = serviceConfigName serviceConfig
+    let sId = ServiceId serviceName
+
+    exe <- case serviceConfigCreate serviceConfig of
+      CreateCommand cmd -> pure $ ExeCommand cmd
+      CreateBlob blob -> do
+        p <- getBlobPath blob
+        b <- liftIO $ doesFileExist p
+        when (not b) $ throwError (NoSuchBlob blob)
+        id <- buildImage p name
+        pure $ ExeImage id
+
     cId <- runDockerThicc $ do
      -- image of proxy: NEED TO CHANGE THIS TO THE RIGHT PROXY IMAGE!
       let hostConfig = defaultHostConfig { networkMode = NetworkNamed "thicc-net" }
@@ -220,12 +237,8 @@ processLogEntry entry = case entry of
     logMsg $ "service proxy ready"
 
     -- actually get the IP address correctly
-    ip <- getIP details
-    let service = Service
-          { serviceProxyIP = IPAddress ip
-          , serviceWorkers = I.empty
-          , serviceCommand = serviceConfigCommand serviceConfig
-          }
+    ip <- IPAddress <$> getIP details
+    let service = emptyService ip exe
 
     modify $ \s ->
       s { thiccServiceMap = M.insert sId service $ thiccServiceMap s }
@@ -239,15 +252,26 @@ processLogEntry entry = case entry of
     cId <- runDockerThicc $ do
       let containerName = workerName serviceId workerId
       let hostConfig = defaultHostConfig { networkMode = NetworkNamed "thicc-net" }
-      let createOpts = defaultCreateOpts thiccWorkerImageId
-      createContainer
-        createOpts
-        { hostConfig = hostConfig
-        , containerConfig = (containerConfig createOpts)
-          { cmd = serviceCommand service
-          }
-        }
-        (Just containerName)
+      let createOpts = case serviceExe service of
+            ExeCommand cmd ->
+              let opts = defaultCreateOpts defaultWorkerImageId in
+              opts
+              { hostConfig = hostConfig
+              , containerConfig = (containerConfig opts)
+                { cmd = cmd
+                }
+              }
+
+            ExeImage iId ->
+              let opts = defaultCreateOpts (fromImageID iId) in
+              opts
+              { hostConfig = hostConfig
+              , containerConfig = (containerConfig opts)
+                { cmd = ["dummy"]
+                }
+              }
+
+      createContainer createOpts (Just containerName)
 
     logMsg $ "worker container created"
 
@@ -345,6 +369,9 @@ catchDockerError m = (Just <$> m) `catchError` handler where
 findContainer :: T.Text -> Thicc (Maybe Container)
 findContainer name = do
   containers <- do
+    -- need to use -a for listing to find container that may not have
+    -- been started, then people who call us need to deal with the
+    -- fact that it may not be started
     cs <- runDockerThicc (listContainers defaultListOpts)
     let cs' = filter (any ("/" <> name ==) . containerNames) cs
     pure cs'
@@ -425,7 +452,7 @@ logEntrySatisfied entry =
     -- get the IP address of the container with the given name
     getIdIp name = do
       c <- findContainer name
-      logMsg $ "found container " ++ show c ++ " for name " ++ T.unpack name
+      logMsg $ "found container for name " ++ T.unpack name
       for c $ \x -> do
         let cId = containerId x
         details <- runDockerThicc $ inspectContainer cId
@@ -541,6 +568,7 @@ mkThiccEnv = do
     , envStartOpts = startOpts
     , envClientOpts = clientOpts
     , envGrpcClient = grpcClient
+    , envBlobDir = "blobs"
     }
 
 -- | Attempts to load the 'ThiccState' from etcd.

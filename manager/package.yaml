@@ -39,6 +39,8 @@ dependencies:
 - wai
 - wai-extra
 - warp
+- filepath
+- directory
 
 library:
   source-dirs: src

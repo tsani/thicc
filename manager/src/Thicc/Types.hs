@@ -1,14 +1,19 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE StandaloneDeriving #-}
 
 module Thicc.Types where
 
+import Control.Applicative ( (<|>) )
 import Data.Aeson
 import Data.Coerce ( coerce )
 import qualified Data.IntMap as I
+import Data.Maybe ( fromMaybe )
 import qualified Data.Scientific as Sci
 import qualified Data.Text as T
 import Data.Word
+import Docker.Client ( ImageID )
 import GHC.Generics
 
 type Command = [T.Text]
@@ -21,7 +26,8 @@ newtype WorkerId = WorkerId { unWorkerId :: Int }
 
 data ServiceConfig = ServiceConfig
   { serviceConfigName :: T.Text -- ^ The name of the service to create.
-  , serviceConfigCommand :: Command -- ^ The command to run on each worker booted into the service.
+  , serviceConfigCreate :: CreateService
+  -- ^ The command or blob to run on each worker booted into the service.
   }
   deriving (Eq, Ord, Show, Generic)
 
@@ -46,13 +52,20 @@ data Service = Service
   { serviceProxyIP :: IPAddress
     -- ^ The IP address of the load balancer for this service.
   , serviceWorkers :: WorkerMap
-  , serviceCommand :: [T.Text]
+  , serviceExe :: ServiceExe
   }
-  deriving (Eq, Ord, Show, Generic)
+  deriving (Eq, Show, Generic)
 
-emptyService :: IPAddress -> Command -> Service
-emptyService ip cmd =
-  Service { serviceProxyIP = ip, serviceWorkers = I.empty, serviceCommand = cmd }
+instance Ord Service where
+  Service { serviceProxyIP = ip1 } <= Service { serviceProxyIP = ip2 } =
+    ip1 <= ip2
+
+emptyService :: IPAddress -> ServiceExe -> Service
+emptyService ip exe = Service
+  { serviceProxyIP = ip
+  , serviceWorkers = I.empty
+  , serviceExe = exe
+  }
 
 instance ToJSON Service
 instance FromJSON Service
@@ -69,3 +82,30 @@ data Worker = Worker
 
 instance FromJSON Worker
 instance ToJSON Worker
+
+newtype BlobName = BlobName { unBlobName :: T.Text }
+  deriving (Eq, Ord, Show, ToJSON, FromJSON)
+
+data CreateService
+  = CreateCommand Command
+  | CreateBlob BlobName
+  deriving (Eq, Ord, Show, Generic)
+
+instance ToJSON CreateService
+
+instance FromJSON CreateService where
+  parseJSON (Object o) =
+    (CreateCommand <$> o .: "command")
+    <|>
+    (CreateBlob <$> o .: "blob")
+
+data ServiceExe
+  = ExeCommand Command
+  | ExeImage ImageID
+  deriving (Eq, Show, Generic)
+
+instance ToJSON ServiceExe
+instance FromJSON ServiceExe
+
+defaultWorkerImageId :: T.Text
+defaultWorkerImageId = "b08f8312d04f"
