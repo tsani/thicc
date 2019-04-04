@@ -25,8 +25,7 @@ def main():
     elif command == "service":
         nextCommand = args[2].lower()
 
-        elif nextCommand == "create"
-
+        if nextCommand == "create":
             #check right # args
             if length < 4:
                 badInput()
@@ -56,13 +55,13 @@ def main():
 
         nextCommand = args[2].lower()
 
-        if nextCommand = "create":
+        if nextCommand == "create":
             if length != 5:
                 badInput()
 
             createBlob(args[3],args[4])
 
-        elif nextCommand = "delete":
+        elif nextCommand == "delete":
             if length != 4:
                 badInput()
 
@@ -126,7 +125,13 @@ def createBlob(blobName, path):
         print(e)
         exit(1)
 
-    r = send('put','blob/' + blobName, payload)
+    r = requests.put(
+        host + 'blob/' + blobName,
+        payload,
+        headers={
+            'Content-Type': 'application/octet-stream'
+        },
+    )
     showResponse(r)
 
 def deleteBlob(blobName):
