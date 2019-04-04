@@ -284,7 +284,26 @@ processLogEntry entry = case entry of
         Right False -> throwError (RefreshFailed "supervisor did not reply 'ok'")
         Right True -> pure ()
 
-  DeleteService serviceId -> error "yolo"
+  DeleteService serviceId -> do
+    service <- getService' serviceId
+    let containerName = "proxy-" <> unServiceId serviceId
+    --stop proxy
+    container <- do
+      maybeContainer <- findContainer containerName
+      case maybeContainer of
+        Nothing -> throwError (NoSuchContainer containerName)
+        Just x -> pure x
+
+    let cid = containerId container
+    runDockerThicc $ stopContainer DefaultTimeout cid
+    logMsg $ "stopped " ++ show containerName ++ " and waiting"
+    runDockerThicc $ waitContainer cid
+    --delete container
+    runDockerThicc $ deleteContainer defaultContainerDeleteOpts cid
+    logMsg $ "deleted " ++ show cid
+    --remove from serviceMap
+    modify $ \s -> s {thiccServiceMap = M.delete serviceId (thiccServiceMap s)}
+
 
 -- | Runs the given 'Thicc' computation, and catches docker errors
 -- that may be thrown in it.
