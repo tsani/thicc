@@ -19,6 +19,8 @@ import qualified Data.Text.Encoding as T
 import Data.Tuple ( swap )
 import System.Directory ( doesFileExist, removeFile )
 import System.FilePath ( FilePath, (</>) )
+import System.Posix.Files
+  ( getFileStatus, fileMode, unionFileModes, ownerExecuteMode, setFileMode )
 
 import Servant.API
 import Servant.Server
@@ -68,6 +70,9 @@ server env svar = service :<|> blob where
         True -> throwError err409 { errBody = "the file already exists" }
         False -> do
           liftIO $ LBS.writeFile dest bs
+          mode <- fileMode <$> liftIO (getFileStatus dest)
+          let mode' = unionFileModes ownerExecuteMode mode
+          liftIO $ setFileMode dest mode'
           pure NoContent
 
     delete = do

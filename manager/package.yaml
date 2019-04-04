@@ -41,6 +41,7 @@ dependencies:
 - warp
 - filepath
 - directory
+- unix
 
 library:
   source-dirs: src
