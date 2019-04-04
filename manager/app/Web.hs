@@ -14,6 +14,7 @@ import Control.Concurrent.MVar
 import Data.Aeson
 import Data.Proxy ( Proxy(..) )
 import qualified Data.Text as T
+import qualified Data.Text.Encoding as T
 import Data.Tuple ( swap )
 
 import Servant.API
@@ -59,29 +60,46 @@ server env svar sId = create :<|> delete :<|> scale where
   runThicc' m = liftIO $ modifyMVar svar $ \st -> 
     swap <$> runThicc env st m
 
-  create (CreateService command) = do
-    e <- runThicc' $ do
-      createService ServiceConfig
-        { serviceConfigName = sId
-        , serviceConfigCommand = command
-        }
-    case e of
-      Left e -> throwError err500
-      Right (_, s) -> pure (ServiceCreated $ serviceProxyIP s)
-  delete = do
-    e <- runThicc' $ deleteService (ServiceId sId)
-    case e of
-      Left e -> throwError err500
-      Right x -> pure NoContent
+  create (CreateService command) =
+    runThicc' m >>=
+    either interpretError (\(_, s) -> pure (ServiceCreated $ serviceProxyIP s))
+    where
+      m = do
+        createService ServiceConfig
+          { serviceConfigName = sId
+          , serviceConfigCommand = command
+          }
 
-  scale (ScaleService n) = do
-    e <- runThicc' $ scaleService ScaleConfig
-      { scaleConfigNumber = n
-      , scaleConfigServiceId = ServiceId sId
-      }
-    case e of
-      Left e -> throwError err500
-      Right x -> pure NoContent
+  delete =
+    runThicc' (deleteService (ServiceId sId)) >>=
+    either interpretError (const $ pure NoContent)
+
+  scale (ScaleService n) =
+    runThicc' m >>=
+    either interpretError (const $ pure NoContent)
+    where
+      m = scaleService ScaleConfig
+        { scaleConfigNumber = n
+        , scaleConfigServiceId = ServiceId sId
+        }
+
+  interpretError :: ThiccError -> Handler a
+  interpretError e = throwError $ case e of
+    UnknownError s -> err err500 (T.pack s)
+    NoSuchService (ServiceId sId) ->
+      err err404 $ "no such service with id " <> sId
+    NoSuchContainer name ->
+      err err404 $ "no such container by name " <> name
+    DockerError e ->
+      err err500 $ "internal docker error " <> T.pack (show e)
+    SaveFailed ->
+      err err500 ("persisting to etcd failed" :: T.Text)
+    InvariantViolated msg ->
+      err err500 $ "internal invariant violated: " <> msg
+    RefreshFailed msg ->
+      err err500 $ "proxy refresh failed: " <> msg
+    where
+      err e msg = e { errBody = encode $ object [ "message" .= msg ] }
 
 webMain :: ThiccEnv -> ThiccState -> IO ()
 webMain env st = do
