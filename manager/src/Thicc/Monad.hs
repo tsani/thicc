@@ -29,7 +29,7 @@ import Lens.Family2 ( (^.) )
 import Proto.Etcd.Etcdserver.Etcdserverpb.Rpc_Fields ( kvs, value )
 import qualified Network.EtcdV3 as Etcd
 import Network.GRPC.Client.Helpers ( GrpcClient, setupGrpcClient )
-import System.Directory ( doesFileExist )
+import System.Directory ( doesFileExist, doesDirectoryExist )
 import System.FilePath ( FilePath, (</>) )
 
 base_conf = T.pack "global \nstats timeout 30s \nuser haproxy \ngroup haproxy \ndaemon \n\ndefaults \nmode tcp \ntimeout connect 50s \ntimeout client  50s \ntimeout server  50s \n\nfrontend proxy \nbind *:80 \ndefault_backend service \n\nbackend service \nbalance leastconn"
@@ -101,6 +101,7 @@ data ThiccError
     -- ^ When a proxy refresh fails.
   deriving Show
 
+
 -- | The persistent state of the manager.
 data ThiccState = ThiccState
   { thiccServiceMap :: ServiceMap
@@ -157,15 +158,15 @@ getIP details = case (networkSettingsNetworks $ networkSettings details) of
 
 
 
-buildImage :: FilePath -> T.Text -> Thicc ImageID
-buildImage pathToExe serviceId = do
+buildImage :: BlobName -> T.Text -> Thicc ImageID
+buildImage blobName serviceId = do
   -- create new docker image
-  liftIO $ writeFile
-    (dockerFilePath </> "Dockerfile")
-    (dockerFileConf ++ "\nCOPY " ++ pathToExe ++ " ./entry")
+  path <- getBlobPath blobName
+  b <- liftIO $ doesDirectoryExist path
+  when (not b) $ throwError (NoSuchBlob blobName)
+  liftIO $ writeFile path (dockerFileConf ++ "\nCOPY " ++ T.unpack (unBlobName blobName)  ++ " ./entry")
 
-  runDockerThicc $ do
-    buildImageFromDockerfile (defaultBuildOpts (serviceId <> ":latest")) dockerFilePath
+  out <- runDockerThicc $ buildImageFromDockerfile (defaultBuildOpts serviceId) path
 
   findImage serviceId
 
@@ -215,10 +216,7 @@ processLogEntry entry = case entry of
     exe <- case serviceConfigCreate serviceConfig of
       CreateCommand cmd -> pure $ ExeCommand cmd
       CreateBlob blob -> do
-        p <- getBlobPath blob
-        b <- liftIO $ doesFileExist p
-        when (not b) $ throwError (NoSuchBlob blob)
-        id <- buildImage p serviceName
+        id <- buildImage blob serviceName
         pure $ ExeImage id
 
     cId <- runDockerThicc $ do
