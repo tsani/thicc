@@ -3,7 +3,18 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
-module Thicc.Monad where
+module Thicc.Monad
+  ( loadState
+  , mkThiccEnv
+  , runThicc
+  , ThiccState
+  , initialThiccState
+  , ThiccEnv(..)
+  , Thicc
+  , ThiccError(..)
+  , MonadThicc(..)
+  )
+where
 
 import Thicc.ProxyRefresh
 import Thicc.Types
@@ -34,8 +45,8 @@ import System.FilePath ( FilePath, (</>) )
 
 base_conf = T.pack "global \nstats timeout 30s \nuser haproxy \ngroup haproxy \ndaemon \n\ndefaults \nmode tcp \ntimeout connect 50s \ntimeout client  50s \ntimeout server  50s \n\nfrontend proxy \nbind *:80 \ndefault_backend service \n\nbackend service \nbalance leastconn"
 
-dockerFileConf = "FROM alpine:3.9\nENTRYPOINT [\"./entry\"]"
-thiccProxyImageId = "ded3c63ab751"
+dockerFileConf = "FROM alpine:3.9\nENTRYPOINT [\"/entry\"]\nCOPY entry /entry\n"
+thiccProxyImageId = "12ddb4c54f1f"
 thiccStateKey = "thicc-state"
 
 -- | Describes an abstract monad with the high-level capabilities of the manager.
@@ -162,9 +173,10 @@ buildImage :: BlobName -> T.Text -> Thicc ImageID
 buildImage blobName serviceId = do
   -- create new docker image
   path <- getBlobPath blobName
-  b <- liftIO $ doesDirectoryExist path
-  when (not b) $ throwError (NoSuchBlob blobName)
-  liftIO $ writeFile path (dockerFileConf ++ "\nCOPY " ++ T.unpack (unBlobName blobName)  ++ " ./entry")
+  liftIO $ do
+    writeFile
+      (path </> "Dockerfile")
+      dockerFileConf
 
   out <- runDockerThicc $ buildImageFromDockerfile (defaultBuildOpts serviceId) path
 
@@ -202,9 +214,12 @@ logMsg :: String -> Thicc ()
 logMsg = liftIO . putStrLn
 
 getBlobPath :: BlobName -> Thicc FilePath
-getBlobPath (BlobName name) = do
+getBlobPath blob@(BlobName name) = do
   base <- asks envBlobDir
-  pure $ base </> T.unpack name
+  let path = base </> T.unpack name
+  b <- liftIO $ doesDirectoryExist path
+  when (not b) $ throwError (NoSuchBlob blob)
+  pure path
 
 processLogEntry :: WAL.LogEntry -> Thicc ()
 processLogEntry entry = case entry of
@@ -576,7 +591,7 @@ mkThiccEnv = do
     , envStartOpts = startOpts
     , envClientOpts = clientOpts
     , envGrpcClient = grpcClient
-    , envBlobDir = "blobs"
+    , envBlobDir = "/home/tsani/projects/thicc/manager/blobs"
     }
 
 -- | Attempts to load the 'ThiccState' from etcd.

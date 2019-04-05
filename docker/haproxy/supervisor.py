@@ -2,15 +2,19 @@
 
 from socket import socket
 import subprocess as sp
-from os import path
+from os import path, fsync
 import sys
 
 SERVER_ADDR = ('', 1500) # host to bind and port
 CONF_PATH = '/usr/local/etc/haproxy/haproxy.cfg'
 PID_FILE = '/run/haproxy.pid'
 
+out = open('/log.txt', 'w')
+
 def eprint(*args, **kwargs):
-    print(*args, file=sys.stderr, **kwargs)
+    print(*args, file=out, **kwargs)
+    out.flush()
+    fsync(out.fileno())
 
 def reload_haproxy():
     """Reloads HAProxy or starts it. The reload is a soft reload and
@@ -37,13 +41,16 @@ def handle_client(conn):
     with open(CONF_PATH, 'wb') as f:
         while True:
             body = conn.recv(4096)
+            eprint("got message:", body)
             if not body:
                 break
             f.write(body)
+            f.flush()
     reload_haproxy()
     conn.send("ok".encode('utf-8'))
 
 def loop(server):
+    eprint('Entering main loop')
     while True:
         conn, addr = server.accept()
         eprint("Connection received.")

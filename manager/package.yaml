@@ -42,6 +42,7 @@ dependencies:
 - filepath
 - directory
 - unix
+- network
 
 library:
   source-dirs: src

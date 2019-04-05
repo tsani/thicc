@@ -131,6 +131,7 @@ server env svar = service :<|> blob where
         err err500 $ "internal invariant violated: " <> msg
       RefreshFailed msg ->
         err err500 $ "proxy refresh failed: " <> msg
+      e -> err err500 $ "truly unknown error occurred: " <> (T.pack $ show e)
       where
         err e msg = e { errBody = encode $ object [ "message" .= msg ] }
 
