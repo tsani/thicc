@@ -17,7 +17,8 @@ import Data.Proxy ( Proxy(..) )
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
 import Data.Tuple ( swap )
-import System.Directory ( doesFileExist, removeFile )
+import System.Directory
+  ( createDirectory, doesDirectoryExist, doesFileExist, removeDirectoryRecursive )
 import System.FilePath ( FilePath, (</>) )
 import System.Posix.Files
   ( getFileStatus, fileMode, unionFileModes, ownerExecuteMode, setFileMode )
@@ -63,23 +64,27 @@ thiccAPI = Proxy
 server :: ThiccEnv -> MVar ThiccState -> Server ThiccAPI
 server env svar = service :<|> blob where
   blob name = create :<|> delete where
-    dest = envBlobDir env </> T.unpack name
+    destDir = envBlobDir env </> T.unpack name
+    dest = destDir </> "entry"
+
     create bs = do
-      b <- liftIO $ doesFileExist dest
+      b <- liftIO $ doesDirectoryExist destDir
       case b of
-        True -> throwError err409 { errBody = "the file already exists" }
+        True -> throwError err409 { errBody = "the blob already exists" }
         False -> do
-          liftIO $ LBS.writeFile dest bs
-          mode <- fileMode <$> liftIO (getFileStatus dest)
-          let mode' = unionFileModes ownerExecuteMode mode
-          liftIO $ setFileMode dest mode'
+          liftIO $ do
+            createDirectory destDir
+            LBS.writeFile dest bs
+            mode <- fileMode <$> liftIO (getFileStatus dest)
+            let mode' = unionFileModes ownerExecuteMode mode
+            setFileMode dest mode'
           pure NoContent
 
     delete = do
-      b <- liftIO $ doesFileExist dest
+      b <- liftIO $ doesDirectoryExist destDir
       case b of
         True -> do
-          liftIO $ removeFile dest
+          liftIO $ removeDirectoryRecursive destDir
           pure NoContent
         False -> throwError err404 { errBody = "no such blob" }
 

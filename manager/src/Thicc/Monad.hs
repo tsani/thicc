@@ -35,7 +35,6 @@ import System.FilePath ( FilePath, (</>) )
 base_conf = T.pack "global \nstats timeout 30s \nuser haproxy \ngroup haproxy \ndaemon \n\ndefaults \nmode tcp \ntimeout connect 50s \ntimeout client  50s \ntimeout server  50s \n\nfrontend proxy \nbind *:80 \ndefault_backend service \n\nbackend service \nbalance leastconn"
 
 dockerFileConf = "FROM alpine:3.9\nENTRYPOINT [\"./entry\"]"
-dockerFilePath = "../docker/blob_worker/"
 thiccProxyImageId = "ded3c63ab751"
 thiccStateKey = "thicc-state"
 
@@ -161,9 +160,12 @@ getIP details = case (networkSettingsNetworks $ networkSettings details) of
 buildImage :: FilePath -> T.Text -> Thicc ImageID
 buildImage pathToExe serviceId = do
   -- create new docker image
-  liftIO $ writeFile dockerFilePath (dockerFileConf ++ "\nCOPY " ++ pathToExe ++ " ./entry")
+  liftIO $ writeFile
+    (dockerFilePath </> "Dockerfile")
+    (dockerFileConf ++ "\nCOPY " ++ pathToExe ++ " ./entry")
 
-  out <- runDockerThicc $ buildImageFromDockerfile (defaultBuildOpts serviceId) pathToExe
+  runDockerThicc $ do
+    buildImageFromDockerfile (defaultBuildOpts (serviceId <> ":latest")) dockerFilePath
 
   findImage serviceId
 
@@ -174,8 +176,13 @@ findImage imageName = do
   images <- runDockerThicc $ listImages defaultListOpts
 
   image <- case filter (any (imageName <> ":latest" ==) . imageRepoTags) images of
-                  [x] -> pure x
-                  _ -> throwError (InvariantViolated $ "Multiple images have same tag")
+    [x] -> pure x
+    [] -> do
+      logMsg $ "finding image " ++ T.unpack imageName
+      logMsg $ show images
+      throwError $ InvariantViolated "no image after build"
+    _ -> do
+      throwError (InvariantViolated $ "Multiple images have same tag")
 
   return $ imageId image
 
