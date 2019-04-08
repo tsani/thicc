@@ -110,6 +110,7 @@ data ThiccError
     -- ^ For when internal invariants are violated.
   | RefreshFailed T.Text
     -- ^ When a proxy refresh fails.
+  | ServiceNonEmpty ServiceId
   deriving Show
 
 
@@ -359,6 +360,9 @@ processLogEntry entry = case entry of
 
   DeleteService serviceId -> do
     service <- getService' serviceId
+    when (not $ I.null $ serviceWorkers service) $ do
+      throwError (ServiceNonEmpty serviceId)
+
     let containerName = "proxy-" <> unServiceId serviceId
     --stop proxy
     container <- do
