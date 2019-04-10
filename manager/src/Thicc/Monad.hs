@@ -488,6 +488,10 @@ logEntrySatisfied entry =
           , IPAddress $ networkSettingsIpAddress $ networkSettings details
           )
 
+catchAllTheErrors :: Thicc a -> Thicc (Either ThiccError a)
+catchAllTheErrors m = (Right <$> m) `catchError` handler where
+  handler e = pure $ Left e
+
 processLog :: Thicc ()
 processLog = do
   wal <- gets thiccWAL
@@ -498,11 +502,19 @@ processLog = do
     go (entry : entries) = do
       -- check if the entry's postconditions are already satisfied
       b <- logEntrySatisfied entry
-      when (not b) $ processLogEntry entry
-      -- after executing the entry, shrink the list of entries to process
-      modify $ \s -> s { thiccWAL = entries }
-      -- and persist the state to fault-tolerant storage
-      save
+      e <- catchAllTheErrors $ when (not b) $ processLogEntry entry
+
+      case e of
+        Left e -> do
+          modify $ \s -> s { thiccWAL = [] }
+          save
+          throwError e
+        Right () -> do
+          -- after executing the entry, shrink the list of entries to process
+          modify $ \s -> s { thiccWAL = entries }
+          -- and persist the state to fault-tolerant storage
+          save
+
       go entries
 
 -- | Prepends an entry to the log.
