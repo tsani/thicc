@@ -2,7 +2,6 @@ resolver: lts-12.26
 # docker:
 #   enable: true
 extra-deps:
-  - docker-0.6.0.0
   - grpc-etcd-client-0.1.2.0
   - grpc-api-etcd-0.2.0.0
   - proto-lens-0.4.0.1
@@ -13,6 +12,7 @@ extra-deps:
   - lens-labels-0.3.0.1
 packages:
 - .
+- ../docker-hs
 image:
   containers:
     - base: fpco/ubuntu-with-libgmp:14.04
