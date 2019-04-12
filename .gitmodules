@@ -1,0 +1,3 @@
+[submodule "docker-hs"]
+	path = docker-hs
+	url = git@github.com:tsani/docker-hs.git
