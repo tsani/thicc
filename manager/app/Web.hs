@@ -8,6 +8,7 @@ module Web (webMain) where
 import Thicc.Monad
 import Thicc.Types
 
+import Control.Concurrent.Async
 import Control.Monad.Except
 import Control.Monad.Trans ( liftIO )
 import Control.Concurrent.MVar
@@ -49,7 +50,13 @@ type ThiccAPI =
   :<|>
   ReqBody '[JSON] ScaleService
   :> PostNoContent '[JSON] NoContent
-  )
+  :<|>
+  "policy" :> (
+      ReqBody '[JSON] ScalingPolicy
+      :> PutNoContent '[JSON] NoContent
+      :<|>
+      DeleteNoContent '[JSON] NoContent
+  ))
   :<|>
   "blob" :> Capture "name" T.Text :> (
   ReqBody '[OctetStream] LBS.ByteString
@@ -88,10 +95,13 @@ server env svar = service :<|> blob where
           pure NoContent
         False -> throwError err404 { errBody = "no such blob" }
 
-  service sId = create :<|> delete :<|> scale where
+  service sId = create :<|> delete :<|> scale :<|> policy where
     runThicc' :: Thicc a -> Handler (Either ThiccError a)
     runThicc' m = liftIO $ modifyMVar svar $ \st ->
       swap <$> runThicc env st m
+
+    runThicc'' :: Thicc a -> Handler a
+    runThicc'' m = runThicc' m >>= either interpretError pure
 
     create conf =
       runThicc' m >>=
@@ -103,18 +113,24 @@ server env svar = service :<|> blob where
             , serviceConfigCreate = conf
             }
 
-    delete =
-      runThicc' (deleteService (ServiceId sId)) >>=
-      either interpretError (const $ pure NoContent)
+    delete = runThicc'' (deleteService (ServiceId sId) *> pure NoContent)
 
-    scale (ScaleService n) =
-      runThicc' m >>=
-      either interpretError (const $ pure NoContent)
-      where
-        m = scaleService ScaleConfig
-          { scaleConfigNumber = n
-          , scaleConfigServiceId = ServiceId sId
-          }
+    scale (ScaleService n) = runThicc'' $ do
+      scaleService ScaleConfig
+        { scaleConfigNumber = n
+        , scaleConfigServiceId = ServiceId sId
+        }
+      pure NoContent
+
+    policy = create :<|> delete where
+      create scalingPolicy = runThicc'' $ do
+        a <- liftIO $ async (monitorService scalingPolicy (ServiceId sId) env svar)
+        createServicePolicy (ServiceId sId) $
+          scalingPolicy { scalingMonitor = Just a }
+        pure NoContent
+      delete = runThicc'' $ do
+        deleteServicePolicy (ServiceId sId)
+        pure NoContent
 
     interpretError :: ThiccError -> Handler a
     interpretError e = throwError $ case e of

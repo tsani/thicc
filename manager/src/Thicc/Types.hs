@@ -1,10 +1,12 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE StandaloneDeriving #-}
 
 module Thicc.Types where
 
+import Control.Concurrent.Async
 import Control.Applicative ( (<|>) )
 import Data.Aeson
 import Data.Coerce ( coerce )
@@ -53,18 +55,47 @@ data Service = Service
     -- ^ The IP address of the load balancer for this service.
   , serviceWorkers :: WorkerMap
   , serviceExe :: ServiceExe
+  , serviceScalingPolicy :: Maybe ScalingPolicy
   }
-  deriving (Eq, Show, Generic)
+  deriving (Eq, Generic)
 
 instance Ord Service where
   Service { serviceProxyIP = ip1 } <= Service { serviceProxyIP = ip2 } =
     ip1 <= ip2
 
+data ScalingPolicy =
+  ScalingPolicy
+  { scalingPolicyReservation :: Int
+    -- ^ Minimum number of instances.
+  , scalingPolicyLimit :: Int
+    -- ^ Maximum number of instances.
+  , scalingMonitor :: Maybe (Async ())
+  }
+  deriving (Eq, Ord)
+
+instance Show ScalingPolicy where
+  show s = "ScalingPolicy" -- TODO
+
+instance ToJSON ScalingPolicy where
+  toJSON (ScalingPolicy {..}) = object
+    [ "reservation" .= scalingPolicyReservation
+    , "limit" .= scalingPolicyLimit
+    ]
+
+instance FromJSON ScalingPolicy where
+  parseJSON (Object o) = ScalingPolicy
+    <$> o .: "reservation"
+    <*> o .: "limit"
+    <*> pure Nothing
+
+-- | Creates a service with the given IP address and executable, an
+-- empty worker map, and no auto-scaling policy.
 emptyService :: IPAddress -> ServiceExe -> Service
 emptyService ip exe = Service
   { serviceProxyIP = ip
   , serviceWorkers = I.empty
   , serviceExe = exe
+  , serviceScalingPolicy = Nothing
   }
 
 instance ToJSON Service
@@ -108,4 +139,4 @@ instance ToJSON ServiceExe
 instance FromJSON ServiceExe
 
 defaultWorkerImageId :: T.Text
-defaultWorkerImageId = "b08f8312d04f"
+defaultWorkerImageId = "791c3e2ebfcb"

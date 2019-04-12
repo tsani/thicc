@@ -1,6 +1,7 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 module Thicc.Monad
@@ -13,6 +14,7 @@ module Thicc.Monad
   , Thicc
   , ThiccError(..)
   , MonadThicc(..)
+  , monitorService
   )
 where
 
@@ -20,7 +22,10 @@ import Thicc.ProxyRefresh
 import Thicc.Types
 import Thicc.WAL as WAL
 
-import Control.Monad ( when )
+import Control.Concurrent ( threadDelay )
+import Control.Concurrent.Async
+import Control.Concurrent.MVar
+import Control.Monad ( when, forM )
 import Control.Monad.Except
 import Control.Monad.Reader
 import Control.Monad.State
@@ -34,6 +39,7 @@ import Data.Monoid ( (<>) )
 import qualified Data.Set as S
 import qualified Data.Text as T
 import Data.Traversable ( for )
+import Data.Tuple ( swap )
 import Docker.Client
 import GHC.Generics
 import Lens.Family2 ( (^.) )
@@ -62,6 +68,16 @@ class MonadThicc m where
   scaleService
     :: ScaleConfig -- ^ The service the worker belongs to.
     -> m [IPAddress]
+
+  -- | Sets the automatic scaling policy for a given service.
+  createServicePolicy
+    :: ServiceId
+    -> ScalingPolicy
+    -> m ()
+
+  deleteServicePolicy
+    :: ServiceId
+    -> m ()
 
   -- | Deletes a service, stopping all its workers and its proxy.
   deleteService
@@ -111,6 +127,11 @@ data ThiccError
   | RefreshFailed T.Text
     -- ^ When a proxy refresh fails.
   | ServiceNonEmpty ServiceId
+    -- ^ When trying to delete a service that has live workers.
+  | InvalidScalingPolicy ScalingPolicy
+    -- ^ When trying to set an invalid scaling policy.
+  | PolicyAlreadyExists ServiceId
+    -- ^ When trying to set a policy on a service that already has one.
   deriving Show
 
 
@@ -583,6 +604,20 @@ instance MonadThicc Thicc where
     -- the IP addresses from the service's live workers.
     map workerIP . I.elems . serviceWorkers <$> getService' serviceId
 
+  createServicePolicy sId policy = do
+    s <- getService' sId
+    case serviceScalingPolicy s of
+      Nothing -> pure ()
+      Just s' -> throwError (PolicyAlreadyExists sId)
+    putService sId s { serviceScalingPolicy = Just policy }
+
+  deleteServicePolicy sId = do
+    s <- getService' sId
+    case serviceScalingPolicy s of
+      Nothing -> pure ()
+      Just (ScalingPolicy _ _ Nothing) -> throwError $ InvariantViolated "active policy has no monitor"
+      Just (ScalingPolicy _ _ (Just a)) -> liftIO $ cancel a
+
   deleteService serviceId = do
     addLogEntry (WAL.DeleteService serviceId)
     processLog
@@ -626,3 +661,53 @@ clientOpts = DockerClientOpts
   , baseUrl = "http://localhost:4243"
   }
 grpcClientConf = Etcd.etcdClientConfigSimple "localhost" 2379 False
+
+monitorService :: ScalingPolicy -> ServiceId -> ThiccEnv -> MVar ThiccState -> IO a
+monitorService p@(ScalingPolicy {..}) sId env svar = do
+  threadDelay (20 * 1000000)
+  runThicc' $ do
+    wIds <- coerce . I.keys . serviceWorkers <$> getService' sId
+    let n = length wIds
+    d <- decideScaling sId wIds
+    n' <- pure $ case d of
+      NoScale -> n
+      ScaleDown -> n - 1
+      ScaleUp -> n + 1
+    let n'' = clampDesiredReplicas p n'
+    scaleService ScaleConfig { scaleConfigServiceId = sId, scaleConfigNumber = n'' }
+
+  monitorService p sId env svar
+  where
+    runThicc' :: Thicc a -> IO (Either ThiccError a)
+    runThicc' m = modifyMVar svar $ \st ->
+      swap <$> runThicc env st m
+
+clampDesiredReplicas :: ScalingPolicy -> Int -> Int
+clampDesiredReplicas ScalingPolicy{..} n
+  | n < scalingPolicyReservation = scalingPolicyReservation
+  | n > scalingPolicyLimit = scalingPolicyLimit
+  | otherwise = n
+
+data ScalingDecision
+  = ScaleUp
+  | ScaleDown
+  | NoScale
+
+decideScaling :: ServiceId -> [WorkerId] -> Thicc ScalingDecision
+decideScaling sId wIds = do
+  fracs <- forM wIds $ \wId -> do
+    let name = workerName sId wId
+    cId <- do
+      m <- findContainer name
+      case m of
+        Just c -> pure $ containerId c
+        Nothing -> throwError $ InvariantViolated "worker missing"
+    stats <- runDockerThicc $ getContainerStats cId
+    let u = fromIntegral $ totalUsage (cpuUsage (cpuStats stats))
+    let su = fromIntegral $ systemCpuUsage (cpuStats stats)
+    pure $ u / su
+  let avg = sum fracs / fromIntegral (length wIds)
+  pure $ case () of
+    () | avg <= 20 -> ScaleDown
+    () | avg <= 80 -> NoScale
+    () | otherwise -> ScaleUp
