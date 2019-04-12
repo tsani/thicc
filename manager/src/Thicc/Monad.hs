@@ -294,11 +294,17 @@ processLogEntry entry = case entry of
     cId <- runDockerThicc $ do
       let containerName = workerName serviceId workerId
       let hostConfig = defaultHostConfig { networkMode = NetworkNamed "thicc-net" }
+      let r = resources hostConfig
       let createOpts = case serviceExe service of
             ExeCommand cmd ->
               let opts = defaultCreateOpts defaultWorkerImageId in
               opts
               { hostConfig = hostConfig
+                { resources = r
+                  { cpuQuota = Just 100000
+                  , cpuPeriod = Just 100000
+                  }
+                }
               , containerConfig = (containerConfig opts)
                 { cmd = cmd
                 }
@@ -664,8 +670,11 @@ grpcClientConf = Etcd.etcdClientConfigSimple "localhost" 2379 False
 
 monitorService :: ScalingPolicy -> ServiceId -> ThiccEnv -> MVar ThiccState -> IO a
 monitorService p@(ScalingPolicy {..}) sId env svar = do
+  putStrLn $ "monitor " ++ show sId ++ " awaiting timeout"
   threadDelay (20 * 1000000)
-  runThicc' $ do
+  putStrLn $ "monitor " ++ show sId ++ " awaiting lock"
+  e <- runThicc' $ do
+    logMsg $ "monitor " ++ show sId ++ " running"
     wIds <- coerce . I.keys . serviceWorkers <$> getService' sId
     let n = length wIds
     d <- decideScaling sId wIds
@@ -674,7 +683,12 @@ monitorService p@(ScalingPolicy {..}) sId env svar = do
       ScaleDown -> n - 1
       ScaleUp -> n + 1
     let n'' = clampDesiredReplicas p n'
+    liftIO $ putStrLn $ "monitor " ++ show sId ++ " scaling to " ++ show n''
     scaleService ScaleConfig { scaleConfigServiceId = sId, scaleConfigNumber = n'' }
+
+  case e of
+    Left e -> putStrLn $ "monitor " ++ show sId ++ " error: " ++ show e
+    Right _ -> pure ()
 
   monitorService p sId env svar
   where
@@ -695,7 +709,7 @@ data ScalingDecision
 
 decideScaling :: ServiceId -> [WorkerId] -> Thicc ScalingDecision
 decideScaling sId wIds = do
-  fracs <- forM wIds $ \wId -> do
+  percents <- forM wIds $ \wId -> do
     let name = workerName sId wId
     cId <- do
       m <- findContainer name
@@ -703,11 +717,23 @@ decideScaling sId wIds = do
         Just c -> pure $ containerId c
         Nothing -> throwError $ InvariantViolated "worker missing"
     stats <- runDockerThicc $ getContainerStats cId
-    let u = fromIntegral $ totalUsage (cpuUsage (cpuStats stats))
-    let su = fromIntegral $ systemCpuUsage (cpuStats stats)
-    pure $ u / su
-  let avg = sum fracs / fromIntegral (length wIds)
+    let p = cpuPercent (cpuStats stats) (preCpuStats stats)
+    logMsg $ "load average: " ++ show p
+    pure p
+
+  let avg = sum percents / fromIntegral (length wIds)
   pure $ case () of
     () | avg <= 20 -> ScaleDown
     () | avg <= 80 -> NoScale
     () | otherwise -> ScaleUp
+
+cpuPercent :: CpuStats -> CpuStats -> Double
+cpuPercent curr prev
+  | cpuDelta > 0 && systemDelta > 0 = frac * percentMax
+  | otherwise = 0
+  where
+    cpuDelta = totalUsage (cpuUsage curr) - totalUsage (cpuUsage prev)
+    systemDelta = systemCpuUsage curr - systemCpuUsage prev
+    frac = fromIntegral cpuDelta / fromIntegral systemDelta
+    percentMax = 100 * 4
+    cpuN = length (perCpuUsage $ cpuUsage curr)
