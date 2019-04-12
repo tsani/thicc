@@ -17,11 +17,7 @@ command = args[1].lower()
 
 def main():
     if command == "?":
-        print("Command options include:\nservice create <service-name> -c
-            <command>\nservice create <service-name> -b <blob-name>\nservice
-            scale <service-name> <total-workers>\nservice delete
-            <service-name>\nservice policy create <service-name> <reservation>
-            <limit>\nservice policy delete <service-name>\ncreate blob <blob-name> <executable-file>\ndelete blob <blob-name>")
+        print("Command options include:\nservice create <service-name> -c <command>\nservice create <service-name> -b <blob-name>\nservice scale <service-name> <total-workers>\nservice delete <service-name>\nservice policy create <service-name> <reservation> <limit>\nservice policy delete <service-name>\ncreate blob <blob-name> <executable-file>\ndelete blob <blob-name>")
 
     if length < 3:
         badInput()
@@ -61,7 +57,7 @@ def main():
             scaleService(serviceName, numWorkers)
         elif nextCommand == "policy":
 
-            if args[3]= 'create':
+            if args[3] == 'create':
                 if length != 7:
                     badInput()
 
@@ -70,7 +66,7 @@ def main():
                 limit = args[6]
 
                 createPolicy(serviceName, reservation, limit)
-            elif args[3] = 'delete':
+            elif args[3] == 'delete':
                 if length != 5:
                     badInput()
                 serviceName = args[4]
@@ -158,8 +154,7 @@ def createPolicy(serviceName, reservation, limit):
         limit = int(limit)
         reservation = int(reservation)
     except e:
-        print("Error: Expected an interger for both reservation and limit,
-        command failed")
+        print("Error: Expected an interger for both reservation and limit, command failed")
         exit(1)
 
     payload = {"reservation":reservation, "limit":limit}
