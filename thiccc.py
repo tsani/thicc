@@ -17,7 +17,9 @@ command = args[1].lower()
 
 def main():
     if command == "?":
-        print("Command options include:\ncreate <service-name> <command>\nscale <service-name> <total-workers>\ndelete <service-name>")
+        print("Command options include:\nservice create <service-name> -c
+            <command>\nservice create <service-name> -b <blob-name>\nservice
+            scale <service-name> <total-workers>\nservice delete <service-name>\ncreate blob <blob-name> <executable-file>\ndelete blob <blob-name>")
 
     if length < 3:
         badInput()
