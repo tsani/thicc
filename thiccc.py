@@ -19,7 +19,9 @@ def main():
     if command == "?":
         print("Command options include:\nservice create <service-name> -c
             <command>\nservice create <service-name> -b <blob-name>\nservice
-            scale <service-name> <total-workers>\nservice delete <service-name>\ncreate blob <blob-name> <executable-file>\ndelete blob <blob-name>")
+            scale <service-name> <total-workers>\nservice delete
+            <service-name>\nservice policy create <service-name> <reservation>
+            <limit>\nservice policy delete <service-name>\ncreate blob <blob-name> <executable-file>\ndelete blob <blob-name>")
 
     if length < 3:
         badInput()
@@ -57,6 +59,28 @@ def main():
             numWorkers = args[4]
 
             scaleService(serviceName, numWorkers)
+        elif nextCommand == "policy":
+
+            if args[3]= 'create':
+                if length != 7:
+                    badInput()
+
+                serviceName = args[4]
+                reservation = args[5]
+                limit = args[6]
+
+                createPolicy(serviceName, reservation, limit)
+            elif args[3] = 'delete':
+                if length != 5:
+                    badInput()
+                serviceName = args[4]
+
+                deletePolicy(serviceName)
+            else:
+                badInput()
+        else:
+            badInput()
+
     elif command == "blob":
         if length < 4:
             badInput()
@@ -128,6 +152,23 @@ def deleteService(serviceName):
 
 def showResponse(r):
     print('success' if r.text == '' else r.json())
+
+def createPolicy(serviceName, reservation, limit):
+    try:
+        limit = int(limit)
+        reservation = int(reservation)
+    except e:
+        print("Error: Expected an interger for both reservation and limit,
+        command failed")
+        exit(1)
+
+    payload = {"reservation":reservation, "limit":limit}
+    r = send('put','services/'+serviceName+'/policy', payload)
+    showResponse(r);
+
+def deletePolicy(serviceName):
+    r = send('delete','services/'+serviceName+'/policy')
+    showResponse(r)
 
 def createBlob(blobName, path):
     #read file
